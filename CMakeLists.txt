@@ -66,7 +66,6 @@ add_executable(stable-abi-transform
     src/Config.cpp
     src/StableAbiAction.cpp
     src/PreprocessorCallbacks.cpp
-    src/AstCallbacks.cpp
     src/TransformerRules.cpp
     src/Reporter.cpp
     src/Verifier.cpp

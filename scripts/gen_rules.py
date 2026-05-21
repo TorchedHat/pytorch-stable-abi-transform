@@ -234,9 +234,21 @@ def generate_rules_h(
     lines.append('// Do not edit manually. Re-run gen_rules.py to update.')
     lines.append('')
     lines.append('#include <array>')
+    lines.append('#include <concepts>')
+    lines.append('#include <ranges>')
     lines.append('#include <string_view>')
     lines.append('')
     lines.append('namespace stable_abi {')
+    lines.append('')
+    lines.append('template <typename R>')
+    lines.append('concept MappingRule = requires(const R &r) {')
+    lines.append('    { r.from } -> std::convertible_to<std::string_view>;')
+    lines.append('    { r.to   } -> std::convertible_to<std::string_view>;')
+    lines.append('};')
+    lines.append('')
+    lines.append('template <typename T>')
+    lines.append('concept MappingRuleRange = std::ranges::range<T> &&')
+    lines.append('    MappingRule<std::ranges::range_value_t<T>>;')
     lines.append('')
 
     # --- Include rules (these are structural, keep hand-maintained) ---
@@ -272,8 +284,8 @@ def generate_rules_h(
 
     # --- Type rules (derived from stable headers) ---
     lines.append('struct TypeRule {')
-    lines.append('    std::string_view old_text;')
-    lines.append('    std::string_view new_text;')
+    lines.append('    std::string_view from;')
+    lines.append('    std::string_view to;')
     lines.append('};')
     lines.append('')
 
@@ -312,9 +324,14 @@ def generate_rules_h(
         ('c10::Float8_e5m2fnuz', 'torch::headeronly::Float8_e5m2fnuz'),
         # Optional
         ('c10::optional', 'std::optional'),
+        # ArrayRef / string_view
+        ('c10::ArrayRef', 'torch::headeronly::HeaderOnlyArrayRef'),
+        ('c10::IntArrayRef', 'torch::headeronly::IntHeaderOnlyArrayRef'),
+        ('at::IntArrayRef', 'torch::headeronly::IntHeaderOnlyArrayRef'),
+        ('c10::string_view', 'std::string_view'),
         # Template utilities
         ('c10::CppTypeToScalarType', 'torch::headeronly::CppTypeToScalarType'),
-        # TensorOptions (flag-only: empty new_text)
+        # TensorOptions (flag-only: empty to)
         ('torch::TensorOptions', ''),
         ('at::TensorOptions', ''),
         ('c10::TensorOptions', ''),
@@ -328,8 +345,8 @@ def generate_rules_h(
 
     # --- Macro rules ---
     lines.append('struct MacroRule {')
-    lines.append('    std::string_view old_name;')
-    lines.append('    std::string_view new_name;')
+    lines.append('    std::string_view from;')
+    lines.append('    std::string_view to;')
     lines.append('    bool flag_only;')
     lines.append('};')
     lines.append('')
@@ -337,7 +354,7 @@ def generate_rules_h(
     macro_rules = [
         ('TORCH_CHECK', 'STD_TORCH_CHECK', False),
         ('TORCH_CHECK_NOT_IMPLEMENTED', 'STD_TORCH_CHECK_NOT_IMPLEMENTED', False),
-        # TORCH_CHECK_EQ/NE/LT/GT/GE/LE handled as special cases in PreprocessorCallbacks.cpp
+        # TORCH_CHECK_EQ/NE/LT/GT/GE/LE handled via kComparisonMacroRules below
         ('TORCH_LIBRARY', 'STABLE_TORCH_LIBRARY', False),
         ('TORCH_LIBRARY_EXPAND', 'STABLE_TORCH_LIBRARY_FRAGMENT', False),
         ('TORCH_LIBRARY_IMPL', 'STABLE_TORCH_LIBRARY_IMPL', False),
@@ -353,14 +370,14 @@ def generate_rules_h(
     for old, new, flag in macro_rules:
         lines.append(f'    MacroRule{{"{old}", "{new}", {"true" if flag else "false"}}},')
         if old == 'TORCH_CHECK_NOT_IMPLEMENTED':
-            lines.append('    // TORCH_CHECK_EQ/NE/LT/GT/GE/LE handled as special cases in PreprocessorCallbacks.cpp')
+            lines.append('    // TORCH_CHECK_EQ/NE/LT/GT/GE/LE handled via kComparisonMacroRules below')
     lines.append('};')
     lines.append('')
 
     # --- Scalar type shorthands (derived from enum) ---
     lines.append('struct ScalarTypeShorthand {')
-    lines.append('    std::string_view old_text;')
-    lines.append('    std::string_view new_text;')
+    lines.append('    std::string_view from;')
+    lines.append('    std::string_view to;')
     lines.append('};')
     lines.append('')
     lines.append('inline constexpr std::array kScalarTypeShorthands = {')
@@ -373,8 +390,8 @@ def generate_rules_h(
 
     # --- Device type shorthands (derived from enum) ---
     lines.append('struct DeviceTypeShorthand {')
-    lines.append('    std::string_view old_text;')
-    lines.append('    std::string_view new_text;')
+    lines.append('    std::string_view from;')
+    lines.append('    std::string_view to;')
     lines.append('};')
     lines.append('')
     lines.append('inline constexpr std::array kDeviceTypeShorthands = {')
@@ -387,8 +404,8 @@ def generate_rules_h(
 
     # --- Method-to-free-function rules (derived from ops.h) ---
     lines.append('struct MethodToFreeFunc {')
-    lines.append('    std::string_view method_name;')
-    lines.append('    std::string_view free_func;')
+    lines.append('    std::string_view from;')
+    lines.append('    std::string_view to;')
     lines.append('};')
     lines.append('')
 
@@ -415,8 +432,8 @@ def generate_rules_h(
 
     # --- Method rename rules ---
     lines.append('struct MethodRenameRule {')
-    lines.append('    std::string_view old_name;')
-    lines.append('    std::string_view new_name;')
+    lines.append('    std::string_view from;')
+    lines.append('    std::string_view to;')
     lines.append('};')
     lines.append('')
     lines.append('inline constexpr std::array kMethodRenameRules = {')
@@ -425,27 +442,72 @@ def generate_rules_h(
     lines.append('};')
     lines.append('')
 
-    # --- Free function namespace rules (derived from ops.h) ---
-    lines.append('struct FreeFuncRule {')
-    lines.append('    std::string_view old_qualified;')
-    lines.append('    std::string_view new_qualified;')
+    # --- Comparison macro rules ---
+    lines.append('struct ComparisonMacroRule {')
+    lines.append('    std::string_view name;')
+    lines.append('    std::string_view op;')
     lines.append('};')
     lines.append('')
 
-    # Ops where first param is NOT Tensor → free functions (factory functions)
-    free_ops = [op for op in ops if not op.is_method_like]
-    # Deduplicate
-    seen_free = set()
-    deduped_free = []
-    for op in free_ops:
-        if op.name not in seen_free:
-            seen_free.add(op.name)
-            deduped_free.append(op)
-    free_ops = deduped_free
+    comparison_rules = [
+        ('TORCH_CHECK_EQ', '=='),
+        ('TORCH_CHECK_NE', '!='),
+        ('TORCH_CHECK_LT', '<'),
+        ('TORCH_CHECK_GT', '>'),
+        ('TORCH_CHECK_GE', '>='),
+        ('TORCH_CHECK_LE', '<='),
+    ]
 
-    # Also add torch::zeros → torch::stable::full (special case: zeros is full(0))
+    lines.append('inline constexpr std::array kComparisonMacroRules = {')
+    for name, op in comparison_rules:
+        lines.append(f'    ComparisonMacroRule{{"{name}", "{op}"}},')
+    lines.append('};')
+    lines.append('')
+
+    # --- Dispatch conversion rules ---
+    lines.append('struct DispatchConvRule {')
+    lines.append('    std::string_view old_name;')
+    lines.append('    std::string_view type_collection;')
+    lines.append('};')
+    lines.append('')
+
+    dispatch_rules = [
+        ('AT_DISPATCH_FLOATING_TYPES', 'AT_FLOATING_TYPES'),
+        ('AT_DISPATCH_ALL_TYPES', 'AT_ALL_TYPES'),
+        ('AT_DISPATCH_ALL_TYPES_AND_COMPLEX', 'AT_ALL_TYPES_AND_COMPLEX'),
+        ('AT_DISPATCH_INTEGRAL_TYPES', 'AT_INTEGRAL_TYPES'),
+        ('AT_DISPATCH_COMPLEX_TYPES', 'AT_COMPLEX_TYPES'),
+        ('AT_DISPATCH_FLOAT8_TYPES', 'AT_FLOAT8_TYPES'),
+    ]
+
+    lines.append('inline constexpr std::array kDispatchConvRules = {')
+    for old_name, type_coll in dispatch_rules:
+        lines.append(f'    DispatchConvRule{{"{old_name}", "{type_coll}"}},')
+    lines.append('};')
+    lines.append('')
+
+    # --- Free function namespace rules (derived from ops.h) ---
+    lines.append('struct FreeFuncRule {')
+    lines.append('    std::string_view from;')
+    lines.append('    std::string_view to;')
+    lines.append('};')
+    lines.append('')
+
+    # All ops exist as free functions in at:: and torch:: namespaces.
+    # Non-method-like first (factory functions), then method-like.
+    all_free = []
+    seen_free = set()
+    for op in ops:
+        if not op.is_method_like and op.name not in seen_free:
+            seen_free.add(op.name)
+            all_free.append(op)
+    for op in ops:
+        if op.is_method_like and op.name not in seen_free:
+            seen_free.add(op.name)
+            all_free.append(op)
+
     lines.append('inline constexpr std::array kFreeFuncRules = {')
-    for op in free_ops:
+    for op in all_free:
         for ns in ['torch', 'at']:
             lines.append(f'    FreeFuncRule{{"{ns}::{op.name}", "torch::stable::{op.name}"}},')
     # Special mappings where function name changes
@@ -511,14 +573,14 @@ def main():
 
     # Report coverage
     method_ops = [op for op in ops if op.is_method_like and op.name not in tensor_methods and not op.name.endswith('_out')]
-    free_ops = [op for op in ops if not op.is_method_like]
+    all_deduped = {op.name for op in ops}
     shorthand_count = sum(len(sc.short_forms) * 2 for sc in scalar_types)
 
     print(f"\n--- Coverage Report ---", file=sys.stderr)
     print(f"Method→FreeFunc rules: {len(method_ops)}", file=sys.stderr)
     print(f"  {[op.name for op in method_ops]}", file=sys.stderr)
-    print(f"Free function rules:   {len(free_ops) * 2} (x2 for at::/torch::)", file=sys.stderr)
-    print(f"  {[op.name for op in free_ops]}", file=sys.stderr)
+    print(f"Free function rules:   {len(all_deduped) * 2 + 2} (x2 for at::/torch:: + zeros)", file=sys.stderr)
+    print(f"  {sorted(all_deduped)}", file=sys.stderr)
     print(f"Scalar type shorthands: {shorthand_count}", file=sys.stderr)
     print(f"Tensor methods (no rewrite needed): {tensor_methods}", file=sys.stderr)
 

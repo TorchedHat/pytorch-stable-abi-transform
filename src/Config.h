@@ -6,26 +6,52 @@
 
 namespace stable_abi {
 
+enum class Mode { Audit, Rewrite, Verify };
+enum class OutputFormat { Text, Json };
+enum class VerifyMethod { Compile, Regex };
+
 struct Config {
-    std::string mode = "audit";
-    std::string format = "text";
+    Mode mode = Mode::Audit;
+    OutputFormat format = OutputFormat::Text;
     std::string pytorch_root;
     std::string project_root;
     std::vector<std::string> compiler_flags;
     std::vector<std::string> include_paths;
     std::vector<std::string> extra_includes;
     std::vector<std::string> sources;
-    std::string verify_method = "compile";
+    VerifyMethod verify_method = VerifyMethod::Compile;
     std::string cuda_include;
 };
 
-bool loadConfig(const std::string &path, Config &out, std::string &error);
+[[nodiscard]] bool loadConfig(const std::string &path, Config &out, std::string &error);
 void printExampleConfig();
 
 } // namespace stable_abi
 
 namespace llvm {
 namespace yaml {
+
+template <> struct ScalarEnumerationTraits<stable_abi::Mode> {
+    static void enumeration(IO &io, stable_abi::Mode &val) {
+        io.enumCase(val, "audit", stable_abi::Mode::Audit);
+        io.enumCase(val, "rewrite", stable_abi::Mode::Rewrite);
+        io.enumCase(val, "verify", stable_abi::Mode::Verify);
+    }
+};
+
+template <> struct ScalarEnumerationTraits<stable_abi::OutputFormat> {
+    static void enumeration(IO &io, stable_abi::OutputFormat &val) {
+        io.enumCase(val, "text", stable_abi::OutputFormat::Text);
+        io.enumCase(val, "json", stable_abi::OutputFormat::Json);
+    }
+};
+
+template <> struct ScalarEnumerationTraits<stable_abi::VerifyMethod> {
+    static void enumeration(IO &io, stable_abi::VerifyMethod &val) {
+        io.enumCase(val, "compile", stable_abi::VerifyMethod::Compile);
+        io.enumCase(val, "regex", stable_abi::VerifyMethod::Regex);
+    }
+};
 
 template <> struct MappingTraits<stable_abi::Config> {
     static void mapping(IO &io, stable_abi::Config &c) {

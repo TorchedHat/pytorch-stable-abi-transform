@@ -167,15 +167,15 @@ static unsigned templateDepthAt(std::string_view text, size_t pos) {
 // Returns the match position if `rule` matches `text` at template depth 0
 // with valid word boundaries, or std::string::npos otherwise.
 static size_t findTypeRuleMatch(std::string_view text, const TypeRule &rule) {
-    auto pos = text.find(rule.old_text);
+    auto pos = text.find(rule.from);
     if (pos == std::string::npos)
         return std::string::npos;
     if (templateDepthAt(text, pos) > 0)
         return std::string::npos;
-    auto endPos = pos + rule.old_text.size();
+    auto endPos = pos + rule.from.size();
     if (endPos < text.size()) {
         char next = text[endPos];
-        if (next == ':' && isEnumQualifierType(rule.old_text))
+        if (next == ':' && isEnumQualifierType(rule.from))
             return std::string::npos;
         if (std::isalnum(static_cast<unsigned char>(next)) || next == '_')
             return std::string::npos;
@@ -206,20 +206,22 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
             if (pos == std::string::npos)
                 continue;
 
-            const bool flag_only = rule.new_text.empty();
+            const bool flag_only = rule.to.empty();
             std::string_view suggestion = flag_only
                 ? "decompose into explicit scalar_type, layout, device args"
-                : rule.new_text;
+                : rule.to;
 
             rep.addFinding(FindingKind::Type, SM, TL->getBeginLoc(),
-                           rule.old_text, suggestion, flag_only);
+                           rule.from, suggestion,
+                           flag_only ? FindingAction::Flag
+                                     : FindingAction::Rewrite);
             if (!rewrite || flag_only)
                 return noEdits();
 
             auto replaceStart = rewriteLoc->getLocWithOffset(
                 static_cast<int>(pos));
             return singleEdit(replaceStart,
-                              static_cast<unsigned>(rule.old_text.size()),
+                              static_cast<unsigned>(rule.from.size()),
                               std::string(suggestion));
         }
 
@@ -241,6 +243,8 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
             "c10::Float8_e5m2", "c10::Float8_e5m2fnuz",
             "c10::CppTypeToScalarType",
             "c10::optional", "std::optional",
+            "c10::ArrayRef", "c10::IntArrayRef", "at::IntArrayRef",
+            "c10::string_view", "std::string_view",
             "torch::TensorOptions", "at::TensorOptions", "c10::TensorOptions"
         ))))))
             .bind("tl"),
@@ -254,7 +258,7 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
 // Macro-expanded arguments can produce multiple AST matches at the same source
 // offset. shared_ptr is needed because std::function (inside EditGenerator)
 // requires a copyable lambda.
-template <typename ShorthandTable>
+template <MappingRuleRange ShorthandTable>
 static llvm::Expected<SmallVector<Edit, 1>> rewriteEnumRef(
     const MatchFinder::MatchResult &R,
     Reporter &rep, bool rewrite,
@@ -280,7 +284,8 @@ static llvm::Expected<SmallVector<Edit, 1>> rewriteEnumRef(
         return noEdits();
     if (SM.isMacroBodyExpansion(loc)) {
         rep.addFinding(FindingKind::ScalarType, SM, spellingLoc,
-                       macroBodyDesc, "(inside macro body)", true);
+                       macroBodyDesc, "(inside macro body)",
+                       FindingAction::Flag);
         return noEdits();
     }
 
@@ -293,23 +298,23 @@ static llvm::Expected<SmallVector<Edit, 1>> rewriteEnumRef(
     SourceLocation rewriteLoc = in_macro_arg ? spellingLoc : loc;
 
     for (const auto &rule : shorthands) {
-        if (text == rule.old_text) {
+        if (text == rule.from) {
             rep.addFinding(FindingKind::ScalarType, SM, spellingLoc,
-                           rule.old_text, rule.new_text);
+                           rule.from, rule.to);
             if (!rewrite)
                 return noEdits();
             return singleEdit(rewriteLoc,
-                              static_cast<unsigned>(rule.old_text.size()),
-                              std::string(rule.new_text));
+                              static_cast<unsigned>(rule.from.size()),
+                              std::string(rule.to));
         }
     }
 
     for (const auto &rule : kTypeRules) {
-        if (rule.old_text != typePrefix1 && rule.old_text != typePrefix2)
+        if (rule.from != typePrefix1 && rule.from != typePrefix2)
             continue;
-        if (text.starts_with(rule.old_text)) {
-            std::string newText = std::string(rule.new_text) +
-                                  text.substr(rule.old_text.size());
+        if (text.starts_with(rule.from)) {
+            std::string newText = std::string(rule.to) +
+                                  text.substr(rule.from.size());
             rep.addFinding(FindingKind::ScalarType, SM, spellingLoc,
                            text, newText);
             if (!rewrite)
@@ -323,64 +328,68 @@ static llvm::Expected<SmallVector<Edit, 1>> rewriteEnumRef(
     return noEdits();
 }
 
-static void addScalarTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
-                               bool rewrite, const LocFilter &loc) {
-    auto shorthandMatcher = declRefExpr(loc.stmt,
-        to(namedDecl(hasAnyName(
-        "kFloat", "kFloat16", "kFloat32", "kFloat64",
-        "kDouble", "kHalf", "kBFloat16", "kBool",
-        "kByte", "kChar", "kShort", "kInt", "kInt8",
-        "kInt16", "kInt32", "kInt64", "kLong",
-        "kFloat8_e4m3fn", "kFloat8_e5m2", "kFloat8_e4m3fnuz",
-        "kFloat8_e5m2fnuz", "kFloat8_e8m0fnu",
-        "kFloat4_e2m1fn_x2",
-        "kComplexHalf", "kComplexFloat",
-        "kComplexDouble", "kUInt8"))))
-        .bind("scalarRef");
-    auto enumMatcher = declRefExpr(loc.stmt,
-        to(enumConstantDecl(hasDeclContext(enumDecl(hasName("ScalarType"))))))
-        .bind("scalarRef");
+template <MappingRuleRange ShorthandArray>
+static void addEnumShorthandRules(
+    std::vector<RewriteRule> &rules, Reporter &rep, bool rewrite,
+    const LocFilter &loc,
+    StatementMatcher shorthandMatcher, StatementMatcher enumMatcher,
+    llvm::StringRef bindName, const ShorthandArray &shorthands,
+    std::string_view typePrefix1, std::string_view typePrefix2,
+    std::string_view macroBodyDesc) {
 
     auto dedup = std::make_shared<llvm::DenseSet<unsigned>>();
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, dedup, projectRoot](const MatchFinder::MatchResult &R)
+    auto editGen = [&rep, rewrite, dedup, projectRoot, bindName,
+                    &shorthands, typePrefix1, typePrefix2,
+                    macroBodyDesc](const MatchFinder::MatchResult &R)
             -> llvm::Expected<SmallVector<Edit, 1>> {
-        return rewriteEnumRef(R, rep, rewrite, *dedup, "scalarRef",
-                              kScalarTypeShorthands,
-                              "at::ScalarType", "c10::ScalarType",
-                              "scalar type shorthand", projectRoot);
+        return rewriteEnumRef(R, rep, rewrite, *dedup, bindName,
+                              shorthands, typePrefix1, typePrefix2,
+                              macroBodyDesc, projectRoot);
     };
 
     rules.push_back(makeRule(shorthandMatcher, EditGenerator(editGen)));
     rules.push_back(makeRule(enumMatcher, EditGenerator(editGen)));
 }
 
+static void addScalarTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
+                               bool rewrite, const LocFilter &loc) {
+    addEnumShorthandRules(rules, rep, rewrite, loc,
+        declRefExpr(loc.stmt,
+            to(namedDecl(hasAnyName(
+            "kFloat", "kFloat16", "kFloat32", "kFloat64",
+            "kDouble", "kHalf", "kBFloat16", "kBool",
+            "kByte", "kChar", "kShort", "kInt", "kInt8",
+            "kInt16", "kInt32", "kInt64", "kLong",
+            "kFloat8_e4m3fn", "kFloat8_e5m2", "kFloat8_e4m3fnuz",
+            "kFloat8_e5m2fnuz", "kFloat8_e8m0fnu",
+            "kFloat4_e2m1fn_x2",
+            "kComplexHalf", "kComplexFloat",
+            "kComplexDouble", "kUInt8"))))
+            .bind("scalarRef"),
+        declRefExpr(loc.stmt,
+            to(enumConstantDecl(hasDeclContext(enumDecl(hasName("ScalarType"))))))
+            .bind("scalarRef"),
+        "scalarRef", kScalarTypeShorthands,
+        "at::ScalarType", "c10::ScalarType", "scalar type shorthand");
+}
+
 static void addDeviceTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                                bool rewrite, const LocFilter &loc) {
-    auto shorthandMatcher = declRefExpr(loc.stmt,
-        to(namedDecl(hasAnyName(
-        "kCPU", "kCUDA", "kMKLDNN", "kOPENGL", "kOPENCL",
-        "kIDEEP", "kHIP", "kFPGA", "kMAIA", "kXLA",
-        "kVulkan", "kMetal", "kXPU", "kMPS", "kMeta",
-        "kHPU", "kVE", "kLazy", "kIPU", "kMTIA",
-        "kPrivateUse1"))))
-        .bind("deviceRef");
-    auto enumMatcher = declRefExpr(loc.stmt,
-        to(enumConstantDecl(hasDeclContext(enumDecl(hasName("DeviceType"))))))
-        .bind("deviceRef");
-
-    auto dedup = std::make_shared<llvm::DenseSet<unsigned>>();
-    auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, dedup, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
-        return rewriteEnumRef(R, rep, rewrite, *dedup, "deviceRef",
-                              kDeviceTypeShorthands,
-                              "at::DeviceType", "c10::DeviceType",
-                              "device type", projectRoot);
-    };
-
-    rules.push_back(makeRule(shorthandMatcher, EditGenerator(editGen)));
-    rules.push_back(makeRule(enumMatcher, EditGenerator(editGen)));
+    addEnumShorthandRules(rules, rep, rewrite, loc,
+        declRefExpr(loc.stmt,
+            to(namedDecl(hasAnyName(
+            "kCPU", "kCUDA", "kMKLDNN", "kOPENGL", "kOPENCL",
+            "kIDEEP", "kHIP", "kFPGA", "kMAIA", "kXLA",
+            "kVulkan", "kMetal", "kXPU", "kMPS", "kMeta",
+            "kHPU", "kVE", "kLazy", "kIPU", "kMTIA",
+            "kPrivateUse1"))))
+            .bind("deviceRef"),
+        declRefExpr(loc.stmt,
+            to(enumConstantDecl(hasDeclContext(enumDecl(hasName("DeviceType"))))))
+            .bind("deviceRef"),
+        "deviceRef", kDeviceTypeShorthands,
+        "at::DeviceType", "c10::DeviceType", "device type");
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +423,7 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
                     rep.addFinding(FindingKind::DataPtr, SM, *spellingLoc,
                                    "data_ptr<dependent>",
                                    "mutable_data_ptr<T> (dependent type)",
-                                   true);
+                                   FindingAction::Flag);
                     return noEdits();
                 }
             }
@@ -434,7 +443,9 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
         if (!rewrite)
             return noEdits();
 
-        return singleEdit(memberLoc, 8, replacement);
+        return singleEdit(memberLoc,
+                          static_cast<unsigned>(std::string_view("data_ptr").size()),
+                          replacement);
     };
 
     rules.push_back(makeRule(
@@ -476,7 +487,7 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
             return noEdits();
 
         for (const auto &rule : kMethodToFreeFuncRules) {
-            if (methodName != rule.method_name)
+            if (methodName != rule.from)
                 continue;
 
             auto objText = getSourceText(obj->getSourceRange(), SM, LO);
@@ -488,7 +499,7 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
                 llvm::consumeError(argsRange.takeError());
 
             std::string replacement =
-                std::string(rule.free_func) + "(" + objText;
+                std::string(rule.to) + "(" + objText;
             if (!argsText.empty())
                 replacement += ", " + argsText;
             replacement += ")";
@@ -506,7 +517,7 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
 
     std::vector<std::string> methodNames;
     for (const auto &rule : kMethodToFreeFuncRules)
-        methodNames.push_back(std::string(rule.method_name));
+        methodNames.push_back(std::string(rule.from));
 
     rules.push_back(makeRule(
         cxxMemberCallExpr(loc.stmt,
@@ -544,7 +555,7 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
         rep.addFinding(FindingKind::Type, *R.SourceManager, Ctor->getBeginLoc(),
                        text,
                        "decompose into explicit scalar_type, layout, device args",
-                       true);
+                       FindingAction::Flag);
         return noEdits();
     };
 
@@ -659,7 +670,8 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
             return noEdits();
         if (SM.isMacroBodyExpansion(exprLoc)) {
             rep.addFinding(FindingKind::MethodToFunc, SM, spellingLoc,
-                           "dtype", "scalar_type (inside macro body)", true);
+                           "dtype", "scalar_type (inside macro body)",
+                           FindingAction::Flag);
             return noEdits();
         }
         const bool in_macro_arg = SM.isMacroArgExpansion(exprLoc);
@@ -670,27 +682,27 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
 
         auto methodName = ME->getMemberDecl()->getNameAsString();
         for (const auto &rule : kMethodRenameRules) {
-            if (methodName != rule.old_name)
+            if (methodName != rule.from)
                 continue;
 
             auto memberLoc = in_macro_arg
                 ? SM.getSpellingLoc(ME->getMemberLoc())
                 : ME->getMemberLoc();
             rep.addFinding(FindingKind::MethodToFunc, SM, memberLoc,
-                           rule.old_name, rule.new_name);
+                           rule.from, rule.to);
             if (!rewrite)
                 return noEdits();
 
             return singleEdit(memberLoc,
-                              static_cast<unsigned>(rule.old_name.size()),
-                              std::string(rule.new_name));
+                              static_cast<unsigned>(rule.from.size()),
+                              std::string(rule.to));
         }
         return noEdits();
     };
 
     std::vector<std::string> renameNames;
     for (const auto &rule : kMethodRenameRules)
-        renameNames.push_back(std::string(rule.old_name));
+        renameNames.push_back(std::string(rule.from));
 
     rules.push_back(makeRule(
         cxxMemberCallExpr(loc.stmt,
@@ -763,7 +775,7 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                                   R.Context->getLangOpts());
         rep.addFinding(FindingKind::FreeFunc, *R.SourceManager,
                        CE->getBeginLoc(), text,
-                       "tensor.element_size()", true);
+                       "tensor.element_size()", FindingAction::Flag);
         return noEdits();
     };
 
@@ -803,38 +815,39 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
         auto writtenText = getSourceText(DRE->getSourceRange(), SM, LO);
 
         for (const auto &rule : kFreeFuncRules) {
-            if (canonicalName != rule.old_qualified &&
-                writtenText != rule.old_qualified)
+            if (canonicalName != rule.from &&
+                writtenText != rule.from)
                 continue;
 
-            auto oldFunc = rule.old_qualified.substr(
-                rule.old_qualified.rfind(':') + 1);
-            auto newFunc = rule.new_qualified.substr(
-                rule.new_qualified.rfind(':') + 1);
+            auto oldFunc = rule.from.substr(
+                rule.from.rfind(':') + 1);
+            auto newFunc = rule.to.substr(
+                rule.to.rfind(':') + 1);
             bool name_changes = (oldFunc != newFunc);
 
             if (name_changes) {
-                std::string suggestion = std::string(rule.new_qualified) +
+                std::string suggestion = std::string(rule.to) +
                     " (function name changes — adjust arguments manually)";
                 rep.addFinding(FindingKind::FreeFunc, SM, CE->getBeginLoc(),
-                               writtenText, suggestion, true);
+                               writtenText, suggestion,
+                               FindingAction::Flag);
                 return noEdits();
             }
 
             rep.addFinding(FindingKind::FreeFunc, SM, CE->getBeginLoc(),
-                           writtenText, rule.new_qualified);
+                           writtenText, rule.to);
             if (!rewrite)
                 return noEdits();
 
             return singleEdit(DRE->getSourceRange(),
-                              std::string(rule.new_qualified));
+                              std::string(rule.to));
         }
         return noEdits();
     };
 
     std::vector<std::string> funcNames;
     for (const auto &rule : kFreeFuncRules)
-        funcNames.push_back(std::string(rule.old_qualified));
+        funcNames.push_back(std::string(rule.from));
 
     rules.push_back(makeRule(
         callExpr(loc.stmt,
@@ -876,7 +889,7 @@ static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
 
         if (!sideEffectFree) {
             rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
-                           fullText, replacement, true);
+                           fullText, replacement, FindingAction::Flag);
             return noEdits();
         }
 
@@ -984,7 +997,7 @@ static void addUnstableTypeCatchAll(std::vector<RewriteRule> &rules,
         std::string msg = "no stable equivalent — rewrite or remove " + qualName;
         if (inMacroBody) msg += " (inside macro body)";
         rep.addFinding(FindingKind::Flag, SM, spelling,
-                       text, msg, true);
+                       text, msg, FindingAction::Flag);
         return noEdits();
     };
 
@@ -1030,7 +1043,7 @@ static void addUnstableRefCatchAll(std::vector<RewriteRule> &rules,
         std::string msg = "no stable equivalent — rewrite or remove " + qualName;
         if (inMacroBody) msg += " (inside macro body)";
         rep.addFinding(FindingKind::Flag, SM, spelling,
-                       text, msg, true);
+                       text, msg, FindingAction::Flag);
         return noEdits();
     };
 
@@ -1062,6 +1075,237 @@ RewriteRule buildTransformerRules(Reporter &rep, bool rewrite_mode,
     addUnstableTypeCatchAll(rules, rep, loc);
     addUnstableRefCatchAll(rules, rep, loc);
     return applyFirst(rules);
+}
+
+// ---------------------------------------------------------------------------
+// Manual AST matcher callbacks (DeviceGuard, CudaStream)
+// ---------------------------------------------------------------------------
+
+void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
+    const auto *DS = Result.Nodes.getNodeAs<DeclStmt>("guardDeclStmt");
+    const auto *VD = Result.Nodes.getNodeAs<VarDecl>("guardDecl");
+    if (!VD)
+        return;
+
+    const auto &SM = *Result.SourceManager;
+    const auto &LO = Result.Context->getLangOpts();
+    auto loc = VD->getBeginLoc();
+
+    if (!isInProjectScope(SM, SM.getSpellingLoc(loc), project_root_))
+        return;
+    if (SM.isMacroBodyExpansion(loc)) {
+        auto text = getSourceText(VD->getSourceRange(), SM, LO);
+        if (text.find("CUDAGuard") != std::string::npos) {
+            reporter_.addFinding(FindingKind::DeviceGuard, SM,
+                                 SM.getSpellingLoc(loc), text,
+                                 "DeviceGuard usage inside macro body",
+                                 FindingAction::Flag);
+        }
+        return;
+    }
+
+    auto text = getSourceText(VD->getSourceRange(), SM, LO);
+
+    if (text.find("CUDAGuard") == std::string::npos)
+        return;
+
+    auto varName = VD->getNameAsString();
+
+    std::string deviceExpr;
+
+    if (const auto *init = VD->getInit()) {
+        if (const auto *CE = dyn_cast<CXXConstructExpr>(
+                init->IgnoreImplicit())) {
+            if (CE->getNumArgs() > 0) {
+                auto argText =
+                    getSourceText(CE->getArg(0)->getSourceRange(), SM, LO);
+                if (const auto *callArg = dyn_cast<CallExpr>(
+                        CE->getArg(0)->IgnoreUnlessSpelledInSource())) {
+                    if (auto *callee = callArg->getDirectCallee()) {
+                        if (callee->getName() == "device_of" &&
+                            callArg->getNumArgs() > 0) {
+                            auto tensorText = getSourceText(
+                                callArg->getArg(0)->getSourceRange(), SM, LO);
+                            deviceExpr = tensorText + ".get_device_index()";
+                        }
+                    }
+                    if (deviceExpr.empty()) {
+                        if (const auto *memberCall =
+                                dyn_cast<CXXMemberCallExpr>(callArg)) {
+                            if (auto *method = memberCall->getMethodDecl()) {
+                                if (method->getName() == "device") {
+                                    auto objText = getSourceText(
+                                        memberCall->getImplicitObjectArgument()
+                                            ->getSourceRange(), SM, LO);
+                                    deviceExpr = objText + ".get_device_index()";
+                                }
+                            }
+                        }
+                    }
+                }
+                if (deviceExpr.empty()) {
+                    deviceExpr = argText;
+                }
+            }
+        }
+    }
+
+    if (deviceExpr.empty()) {
+        auto deviceOfPos = text.find("device_of(");
+        if (deviceOfPos != std::string::npos) {
+            auto argStart = deviceOfPos + 10;
+            int depth = 1;
+            auto argEnd = argStart;
+            for (; argEnd < text.size() && depth > 0; ++argEnd) {
+                if (text[argEnd] == '(')
+                    ++depth;
+                else if (text[argEnd] == ')')
+                    --depth;
+            }
+            if (depth == 0 && argEnd > argStart + 1) {
+                auto tensorName = text.substr(argStart, argEnd - argStart - 1);
+                deviceExpr = tensorName + ".get_device_index()";
+            }
+        }
+    }
+
+    if (deviceExpr.empty()) {
+        reporter_.addFinding(
+            FindingKind::DeviceGuard, SM, loc, text,
+            "torch::stable::accelerator::DeviceGuard " + varName +
+                "(tensor.get_device_index())",
+            FindingAction::Flag);
+        return;
+    }
+
+    last_device_expr_ = deviceExpr;
+
+    std::string replacement = "const torch::stable::accelerator::DeviceGuard " +
+                              varName + "(" + deviceExpr + ");";
+
+    reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text, replacement);
+    if (rewrite_mode_) {
+        SourceRange replaceRange = DS ? DS->getSourceRange() : VD->getSourceRange();
+        auto stmtEnd = Lexer::findLocationAfterToken(
+            replaceRange.getEnd(), tok::semi, SM, LO, false);
+        if (stmtEnd.isValid()) {
+            addReplacement(file_repls_, SM,
+                CharSourceRange::getCharRange(replaceRange.getBegin(), stmtEnd),
+                replacement, LO);
+        } else {
+            addReplacement(file_repls_, SM,
+                CharSourceRange::getTokenRange(replaceRange),
+                replacement, LO);
+        }
+    }
+}
+
+void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
+    const auto *DS = Result.Nodes.getNodeAs<DeclStmt>("streamDeclStmt");
+    const auto *CE = Result.Nodes.getNodeAs<CallExpr>("streamCall");
+    if (!CE)
+        return;
+
+    const auto &SM = *Result.SourceManager;
+    const auto &LO = Result.Context->getLangOpts();
+    auto loc = CE->getBeginLoc();
+
+    if (!isInProjectScope(SM, SM.getSpellingLoc(loc), project_root_))
+        return;
+    if (SM.isMacroBodyExpansion(loc)) {
+        auto text = getSourceText(CE->getSourceRange(), SM, LO);
+        bool isStream =
+            text.find("getCurrentCUDAStream") != std::string::npos ||
+            text.find("getCurrentStream") != std::string::npos;
+        if (isStream) {
+            reporter_.addFinding(FindingKind::CudaStream, SM,
+                                 SM.getSpellingLoc(loc), text,
+                                 "CUDA stream usage inside macro body",
+                                 FindingAction::Flag);
+        }
+        return;
+    }
+
+    auto text = getSourceText(CE->getSourceRange(), SM, LO);
+
+    bool isCurrentStream =
+        text.find("getCurrentCUDAStream") != std::string::npos ||
+        text.find("getCurrentStream") != std::string::npos;
+
+    if (!isCurrentStream)
+        return;
+
+    if (DS && DS->isSingleDecl()) {
+        if (const auto *VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
+            auto varName = VD->getNameAsString();
+            auto stmtText = getSourceText(DS->getSourceRange(), SM, LO);
+            auto indent = getIndent(DS->getBeginLoc(), SM);
+
+            const auto &device_expr = guard_cb_.getLastDeviceExpr();
+            std::string deviceExpr = device_expr.empty() ? "-1" : device_expr;
+
+            std::string replacement =
+                "void* " + varName + "_ptr = nullptr;\n" +
+                indent + "aoti_torch_get_current_cuda_stream(" + deviceExpr +
+                ", &" + varName + "_ptr);\n" +
+                indent + "const cudaStream_t " + varName +
+                " = reinterpret_cast<cudaStream_t>(" + varName + "_ptr);";
+
+            reporter_.addFinding(FindingKind::CudaStream, SM, loc, stmtText,
+                                 replacement);
+            if (rewrite_mode_) {
+                auto stmtEnd = Lexer::findLocationAfterToken(
+                    DS->getEndLoc(), tok::semi, SM, LO, false);
+                if (stmtEnd.isValid()) {
+                    addReplacement(file_repls_, SM,
+                        CharSourceRange::getCharRange(DS->getBeginLoc(),
+                                                      stmtEnd),
+                        replacement, LO);
+                } else {
+                    addReplacement(file_repls_, SM,
+                        CharSourceRange::getTokenRange(DS->getSourceRange()),
+                        replacement, LO);
+                }
+            }
+            return;
+        }
+    }
+
+    reporter_.addFinding(
+        FindingKind::CudaStream, SM, loc, text,
+        "aoti_torch_get_current_cuda_stream(device_index, &stream_ptr)",
+        FindingAction::Flag);
+}
+
+void registerManualMatchers(MatchFinder &finder,
+                            CudaStreamCallback &streamCallback,
+                            DeviceGuardCallback &guardCallback) {
+    finder.addMatcher(
+        declStmt(containsDeclaration(
+                     0, varDecl(hasType(hasUnqualifiedDesugaredType(recordType(
+                                    hasDeclaration(cxxRecordDecl(hasAnyName(
+                                        "OptionalCUDAGuard", "CUDAGuard",
+                                        "InferenceMode")))))))
+                            .bind("guardDecl")))
+            .bind("guardDeclStmt"),
+        &guardCallback);
+
+    finder.addMatcher(
+        declStmt(containsDeclaration(
+                     0, varDecl(hasInitializer(hasDescendant(
+                            callExpr(callee(functionDecl(hasAnyName(
+                                         "getCurrentCUDAStream",
+                                         "getCurrentStream"))))
+                                .bind("streamCall"))))))
+            .bind("streamDeclStmt"),
+        &streamCallback);
+
+    finder.addMatcher(
+        callExpr(callee(functionDecl(
+                     hasAnyName("getCurrentCUDAStream", "getCurrentStream"))),
+                 unless(hasAncestor(declStmt())))
+            .bind("streamCall"),
+        &streamCallback);
 }
 
 } // namespace stable_abi

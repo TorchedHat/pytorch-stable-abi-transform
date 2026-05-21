@@ -1,11 +1,13 @@
 #include "Reporter.h"
+#include "Helpers.h"
+#include <llvm/Support/Format.h>
 #include <llvm/Support/raw_ostream.h>
 
 namespace stable_abi {
 
 void Reporter::addFinding(FindingKind kind, const clang::SourceManager &SM,
                           clang::SourceLocation loc, std::string_view old_text,
-                          std::string_view new_text, bool is_flag) {
+                          std::string_view new_text, FindingAction action) {
     if (loc.isInvalid())
         return;
 
@@ -14,21 +16,21 @@ void Reporter::addFinding(FindingKind kind, const clang::SourceManager &SM,
         return;
 
     addFinding(kind, ploc.getFilename(), ploc.getLine(), ploc.getColumn(),
-               old_text, new_text, is_flag);
+               old_text, new_text, action);
 }
 
 void Reporter::addFinding(FindingKind kind, std::string_view file,
                            unsigned line, unsigned col,
                            std::string_view old_text,
-                           std::string_view new_text, bool is_flag) {
+                           std::string_view new_text, FindingAction action) {
     if (!seen_.emplace(std::string(file), line, col, std::string(old_text)).second)
         return;
 
     findings_.push_back(
         {kind, std::string(file), line, col, std::string(old_text),
-         std::string(new_text), is_flag});
+         std::string(new_text), action});
 
-    if (is_flag)
+    if (action == FindingAction::Flag)
         ++flag_count_;
     else
         ++rewrite_count_;
@@ -36,37 +38,20 @@ void Reporter::addFinding(FindingKind kind, std::string_view file,
 
 void Reporter::printReport() const {
     for (const auto &f : findings_) {
-        if (f.is_flag) {
-            llvm::outs() << "[FLAG]  ";
-        } else {
-            llvm::outs() << "[" << kindLabel(f.kind) << "] ";
-        }
-        llvm::outs() << f.file << ":" << f.line << ":" << f.col << "  "
+        auto label = (f.action == FindingAction::Flag)
+            ? std::string_view("FLAG")
+            : kindLabel(f.kind);
+        llvm::outs() << llvm::format("[%-5s] ", label.data())
+                      << f.file << ":" << f.line << ":" << f.col << "  "
                       << f.old_text << " -> "
-                      << (f.is_flag ? "(manual review) " : "") << f.new_text
-                      << "\n";
+                      << (f.action == FindingAction::Flag ? "(manual review) " : "")
+                      << f.new_text << "\n";
     }
 }
 
 void Reporter::printSummary() const {
     llvm::outs() << "\nSummary: " << rewrite_count_ << " auto-rewritable, "
                  << flag_count_ << " flagged for manual review\n";
-}
-
-static std::string jsonEscape(const std::string &s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default: out += c;
-        }
-    }
-    return out;
 }
 
 void Reporter::printJson() const {
@@ -80,7 +65,8 @@ void Reporter::printJson() const {
         llvm::outs() << "\"col\": " << f.col << ", ";
         llvm::outs() << "\"old\": \"" << jsonEscape(f.old_text) << "\", ";
         llvm::outs() << "\"new\": \"" << jsonEscape(f.new_text) << "\", ";
-        llvm::outs() << "\"flag\": " << (f.is_flag ? "true" : "false");
+        llvm::outs() << "\"flag\": "
+                      << (f.action == FindingAction::Flag ? "true" : "false");
         llvm::outs() << "}";
         if (i + 1 < findings_.size())
             llvm::outs() << ",";
@@ -111,13 +97,13 @@ void Reporter::printParseWarnings() const {
 void Reporter::suppressRedundantFlags() {
     std::set<std::pair<std::string, unsigned>> covered;
     for (const auto &f : findings_)
-        if (!f.is_flag)
+        if (f.action == FindingAction::Rewrite)
             covered.insert({f.file, f.line});
 
     size_t removed = 0;
     auto it = std::remove_if(findings_.begin(), findings_.end(),
         [&covered, &removed](const Finding &f) {
-            if (f.is_flag && covered.count({f.file, f.line})) {
+            if (f.action == FindingAction::Flag && covered.count({f.file, f.line})) {
                 ++removed;
                 return true;
             }
@@ -135,28 +121,28 @@ bool Reporter::hasNonIncludeFindingsForFile(std::string_view filename) const {
     return false;
 }
 
-const char *Reporter::kindLabel(FindingKind kind) {
+std::string_view Reporter::kindLabel(FindingKind kind) {
     switch (kind) {
     case FindingKind::Include:
-        return "INCL ";
+        return "INCL";
     case FindingKind::Macro:
         return "MACRO";
     case FindingKind::Type:
-        return "TYPE ";
+        return "TYPE";
     case FindingKind::ScalarType:
         return "STYPE";
     case FindingKind::DataPtr:
-        return "DPTR ";
+        return "DPTR";
     case FindingKind::CudaStream:
-        return "STRM ";
+        return "STRM";
     case FindingKind::DeviceGuard:
         return "GUARD";
     case FindingKind::MethodToFunc:
-        return "M2F  ";
+        return "M2F";
     case FindingKind::FreeFunc:
-        return "FUNC ";
+        return "FUNC";
     case FindingKind::Flag:
-        return "FLAG ";
+        return "FLAG";
     }
     return "?????";
 }

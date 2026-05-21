@@ -5,9 +5,21 @@
 // Do not edit manually. Re-run gen_rules.py to update.
 
 #include <array>
+#include <concepts>
+#include <ranges>
 #include <string_view>
 
 namespace stable_abi {
+
+template <typename R>
+concept MappingRule = requires(const R &r) {
+    { r.from } -> std::convertible_to<std::string_view>;
+    { r.to   } -> std::convertible_to<std::string_view>;
+};
+
+template <typename T>
+concept MappingRuleRange = std::ranges::range<T> &&
+    MappingRule<std::ranges::range_value_t<T>>;
 
 // Include rules are structural and hand-maintained.
 // The stable headers don't encode which unstable headers map to them.
@@ -34,8 +46,8 @@ inline constexpr std::array kIncludeRules = {
 };
 
 struct TypeRule {
-    std::string_view old_text;
-    std::string_view new_text;
+    std::string_view from;
+    std::string_view to;
 };
 
 inline constexpr std::array kTypeRules = {
@@ -62,6 +74,10 @@ inline constexpr std::array kTypeRules = {
     TypeRule{"c10::Float8_e5m2", "torch::headeronly::Float8_e5m2"},
     TypeRule{"c10::Float8_e5m2fnuz", "torch::headeronly::Float8_e5m2fnuz"},
     TypeRule{"c10::optional", "std::optional"},
+    TypeRule{"c10::ArrayRef", "torch::headeronly::HeaderOnlyArrayRef"},
+    TypeRule{"c10::IntArrayRef", "torch::headeronly::IntHeaderOnlyArrayRef"},
+    TypeRule{"at::IntArrayRef", "torch::headeronly::IntHeaderOnlyArrayRef"},
+    TypeRule{"c10::string_view", "std::string_view"},
     TypeRule{"c10::CppTypeToScalarType", "torch::headeronly::CppTypeToScalarType"},
     TypeRule{"torch::TensorOptions", ""},
     TypeRule{"at::TensorOptions", ""},
@@ -69,15 +85,15 @@ inline constexpr std::array kTypeRules = {
 };
 
 struct MacroRule {
-    std::string_view old_name;
-    std::string_view new_name;
+    std::string_view from;
+    std::string_view to;
     bool flag_only;
 };
 
 inline constexpr std::array kMacroRules = {
     MacroRule{"TORCH_CHECK", "STD_TORCH_CHECK", false},
     MacroRule{"TORCH_CHECK_NOT_IMPLEMENTED", "STD_TORCH_CHECK_NOT_IMPLEMENTED", false},
-    // TORCH_CHECK_EQ/NE/LT/GT/GE/LE handled as special cases in PreprocessorCallbacks.cpp
+    // TORCH_CHECK_EQ/NE/LT/GT/GE/LE handled via kComparisonMacroRules below
     MacroRule{"TORCH_LIBRARY", "STABLE_TORCH_LIBRARY", false},
     MacroRule{"TORCH_LIBRARY_EXPAND", "STABLE_TORCH_LIBRARY_FRAGMENT", false},
     MacroRule{"TORCH_LIBRARY_IMPL", "STABLE_TORCH_LIBRARY_IMPL", false},
@@ -90,8 +106,8 @@ inline constexpr std::array kMacroRules = {
 };
 
 struct ScalarTypeShorthand {
-    std::string_view old_text;
-    std::string_view new_text;
+    std::string_view from;
+    std::string_view to;
 };
 
 inline constexpr std::array kScalarTypeShorthands = {
@@ -152,8 +168,8 @@ inline constexpr std::array kScalarTypeShorthands = {
 };
 
 struct DeviceTypeShorthand {
-    std::string_view old_text;
-    std::string_view new_text;
+    std::string_view from;
+    std::string_view to;
 };
 
 inline constexpr std::array kDeviceTypeShorthands = {
@@ -202,8 +218,8 @@ inline constexpr std::array kDeviceTypeShorthands = {
 };
 
 struct MethodToFreeFunc {
-    std::string_view method_name;
-    std::string_view free_func;
+    std::string_view from;
+    std::string_view to;
 };
 
 inline constexpr std::array kMethodToFreeFuncRules = {
@@ -232,8 +248,8 @@ inline constexpr std::array kMethodToFreeFuncRules = {
 };
 
 struct MethodRenameRule {
-    std::string_view old_name;
-    std::string_view new_name;
+    std::string_view from;
+    std::string_view to;
 };
 
 inline constexpr std::array kMethodRenameRules = {
@@ -241,9 +257,37 @@ inline constexpr std::array kMethodRenameRules = {
     MethodRenameRule{"itemsize", "element_size"},
 };
 
+struct ComparisonMacroRule {
+    std::string_view name;
+    std::string_view op;
+};
+
+inline constexpr std::array kComparisonMacroRules = {
+    ComparisonMacroRule{"TORCH_CHECK_EQ", "=="},
+    ComparisonMacroRule{"TORCH_CHECK_NE", "!="},
+    ComparisonMacroRule{"TORCH_CHECK_LT", "<"},
+    ComparisonMacroRule{"TORCH_CHECK_GT", ">"},
+    ComparisonMacroRule{"TORCH_CHECK_GE", ">="},
+    ComparisonMacroRule{"TORCH_CHECK_LE", "<="},
+};
+
+struct DispatchConvRule {
+    std::string_view old_name;
+    std::string_view type_collection;
+};
+
+inline constexpr std::array kDispatchConvRules = {
+    DispatchConvRule{"AT_DISPATCH_FLOATING_TYPES", "AT_FLOATING_TYPES"},
+    DispatchConvRule{"AT_DISPATCH_ALL_TYPES", "AT_ALL_TYPES"},
+    DispatchConvRule{"AT_DISPATCH_ALL_TYPES_AND_COMPLEX", "AT_ALL_TYPES_AND_COMPLEX"},
+    DispatchConvRule{"AT_DISPATCH_INTEGRAL_TYPES", "AT_INTEGRAL_TYPES"},
+    DispatchConvRule{"AT_DISPATCH_COMPLEX_TYPES", "AT_COMPLEX_TYPES"},
+    DispatchConvRule{"AT_DISPATCH_FLOAT8_TYPES", "AT_FLOAT8_TYPES"},
+};
+
 struct FreeFuncRule {
-    std::string_view old_qualified;
-    std::string_view new_qualified;
+    std::string_view from;
+    std::string_view to;
 };
 
 inline constexpr std::array kFreeFuncRules = {
@@ -257,42 +301,54 @@ inline constexpr std::array kFreeFuncRules = {
     FreeFuncRule{"at::from_blob", "torch::stable::from_blob"},
     FreeFuncRule{"torch::full", "torch::stable::full"},
     FreeFuncRule{"at::full", "torch::stable::full"},
-    FreeFuncRule{"torch::zeros", "torch::stable::full"},
-    FreeFuncRule{"at::zeros", "torch::stable::full"},
     FreeFuncRule{"torch::empty_like", "torch::stable::empty_like"},
     FreeFuncRule{"at::empty_like", "torch::stable::empty_like"},
-    FreeFuncRule{"torch::clone", "torch::stable::clone"},
-    FreeFuncRule{"at::clone", "torch::stable::clone"},
-    FreeFuncRule{"torch::transpose", "torch::stable::transpose"},
-    FreeFuncRule{"at::transpose", "torch::stable::transpose"},
-    FreeFuncRule{"torch::flatten", "torch::stable::flatten"},
-    FreeFuncRule{"at::flatten", "torch::stable::flatten"},
-    FreeFuncRule{"torch::squeeze", "torch::stable::squeeze"},
-    FreeFuncRule{"at::squeeze", "torch::stable::squeeze"},
-    FreeFuncRule{"torch::unsqueeze", "torch::stable::unsqueeze"},
-    FreeFuncRule{"at::unsqueeze", "torch::stable::unsqueeze"},
-    FreeFuncRule{"torch::matmul", "torch::stable::matmul"},
-    FreeFuncRule{"at::matmul", "torch::stable::matmul"},
-    FreeFuncRule{"torch::contiguous", "torch::stable::contiguous"},
-    FreeFuncRule{"at::contiguous", "torch::stable::contiguous"},
-    FreeFuncRule{"torch::reshape", "torch::stable::reshape"},
-    FreeFuncRule{"at::reshape", "torch::stable::reshape"},
-    FreeFuncRule{"torch::select", "torch::stable::select"},
-    FreeFuncRule{"at::select", "torch::stable::select"},
+    FreeFuncRule{"torch::fill_", "torch::stable::fill_"},
+    FreeFuncRule{"at::fill_", "torch::stable::fill_"},
     FreeFuncRule{"torch::narrow", "torch::stable::narrow"},
     FreeFuncRule{"at::narrow", "torch::stable::narrow"},
-    FreeFuncRule{"torch::sum", "torch::stable::sum"},
-    FreeFuncRule{"at::sum", "torch::stable::sum"},
+    FreeFuncRule{"torch::new_empty", "torch::stable::new_empty"},
+    FreeFuncRule{"at::new_empty", "torch::stable::new_empty"},
+    FreeFuncRule{"torch::new_zeros", "torch::stable::new_zeros"},
+    FreeFuncRule{"at::new_zeros", "torch::stable::new_zeros"},
     FreeFuncRule{"torch::pad", "torch::stable::pad"},
     FreeFuncRule{"at::pad", "torch::stable::pad"},
     FreeFuncRule{"torch::amax", "torch::stable::amax"},
     FreeFuncRule{"at::amax", "torch::stable::amax"},
+    FreeFuncRule{"torch::transpose", "torch::stable::transpose"},
+    FreeFuncRule{"at::transpose", "torch::stable::transpose"},
     FreeFuncRule{"torch::zero_", "torch::stable::zero_"},
     FreeFuncRule{"at::zero_", "torch::stable::zero_"},
-    FreeFuncRule{"torch::fill_", "torch::stable::fill_"},
-    FreeFuncRule{"at::fill_", "torch::stable::fill_"},
     FreeFuncRule{"torch::copy_", "torch::stable::copy_"},
     FreeFuncRule{"at::copy_", "torch::stable::copy_"},
+    FreeFuncRule{"torch::clone", "torch::stable::clone"},
+    FreeFuncRule{"at::clone", "torch::stable::clone"},
+    FreeFuncRule{"torch::flatten", "torch::stable::flatten"},
+    FreeFuncRule{"at::flatten", "torch::stable::flatten"},
+    FreeFuncRule{"torch::unsqueeze", "torch::stable::unsqueeze"},
+    FreeFuncRule{"at::unsqueeze", "torch::stable::unsqueeze"},
+    FreeFuncRule{"torch::squeeze", "torch::stable::squeeze"},
+    FreeFuncRule{"at::squeeze", "torch::stable::squeeze"},
+    FreeFuncRule{"torch::select", "torch::stable::select"},
+    FreeFuncRule{"at::select", "torch::stable::select"},
+    FreeFuncRule{"torch::matmul", "torch::stable::matmul"},
+    FreeFuncRule{"at::matmul", "torch::stable::matmul"},
+    FreeFuncRule{"torch::reshape", "torch::stable::reshape"},
+    FreeFuncRule{"at::reshape", "torch::stable::reshape"},
+    FreeFuncRule{"torch::view", "torch::stable::view"},
+    FreeFuncRule{"at::view", "torch::stable::view"},
+    FreeFuncRule{"torch::to", "torch::stable::to"},
+    FreeFuncRule{"at::to", "torch::stable::to"},
+    FreeFuncRule{"torch::contiguous", "torch::stable::contiguous"},
+    FreeFuncRule{"at::contiguous", "torch::stable::contiguous"},
+    FreeFuncRule{"torch::sum", "torch::stable::sum"},
+    FreeFuncRule{"at::sum", "torch::stable::sum"},
+    FreeFuncRule{"torch::sum_out", "torch::stable::sum_out"},
+    FreeFuncRule{"at::sum_out", "torch::stable::sum_out"},
+    FreeFuncRule{"torch::subtract", "torch::stable::subtract"},
+    FreeFuncRule{"at::subtract", "torch::stable::subtract"},
+    FreeFuncRule{"torch::zeros", "torch::stable::full"},
+    FreeFuncRule{"at::zeros", "torch::stable::full"},
 };
 
 } // namespace stable_abi

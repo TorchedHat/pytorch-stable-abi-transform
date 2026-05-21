@@ -60,18 +60,40 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
     makeAbsolute(out.project_root, base);
     makeAbsolute(out.cuda_include, base);
 
+    auto warnUnexpanded = [](const std::string &s, llvm::StringRef field) {
+        size_t pos = 0;
+        while ((pos = s.find("${", pos)) != std::string::npos) {
+            auto end = s.find('}', pos);
+            if (end != std::string::npos) {
+                llvm::errs() << "warning: unexpanded variable in " << field
+                             << ": "
+                             << llvm::StringRef(s).substr(pos, end - pos + 1)
+                             << "\n";
+                pos = end + 1;
+            } else {
+                break;
+            }
+        }
+    };
+
     for (auto &p : out.include_paths) {
         expandVars(p, out);
         makeAbsolute(p, base);
+        warnUnexpanded(p, "include_paths");
     }
     for (auto &p : out.extra_includes) {
         expandVars(p, out);
         makeAbsolute(p, base);
+        warnUnexpanded(p, "extra_includes");
     }
     for (auto &p : out.sources) {
         expandVars(p, out);
         makeAbsolute(p, base);
+        warnUnexpanded(p, "sources");
     }
+    warnUnexpanded(out.pytorch_root, "pytorch_root");
+    warnUnexpanded(out.project_root, "project_root");
+    warnUnexpanded(out.cuda_include, "cuda_include");
 
     return true;
 }

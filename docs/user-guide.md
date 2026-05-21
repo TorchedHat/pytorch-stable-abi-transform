@@ -94,7 +94,11 @@ Switch modes by editing `mode:` in `.stable-abi.yaml` or passing `--mode=` on th
 | Comparison macros | `TORCH_CHECK_EQ(a, b)` -> `STD_TORCH_CHECK((a) == (b))` | Yes |
 | `c10::optional<T>` | -> `std::optional<T>` | Yes |
 | `c10::nullopt` | -> `std::nullopt` | Yes |
+| `c10::ArrayRef<T>` | -> `torch::headeronly::HeaderOnlyArrayRef<T>` | Yes |
+| `c10::IntArrayRef` | -> `torch::headeronly::IntHeaderOnlyArrayRef` | Yes |
+| `c10::string_view` | -> `std::string_view` | Yes |
 | TensorOptions | `torch::TensorOptions(...)` | Flagged |
+| Unstable macros in macro bodies | `TORCH_CHECK` etc. inside `#define` | Flagged |
 | PYBIND11_MODULE | Binding macro detection | Flagged |
 | `elementSize(dtype)` | Standalone call (no tensor) | Flagged |
 | Project dispatch macros | e.g. `VLLM_DISPATCH_*` | Flagged |
@@ -151,11 +155,27 @@ Pattern-matches against known unstable namespaces. Faster but less precise — u
 ## CI integration
 
 ```bash
-# Exit code: 0 = clean, 1 = unstable API detected
+# Exit codes:
+#   audit/dry-run: 0 = no unstable API found, 1 = findings exist
+#   rewrite:       0 = all auto-fixed, 1 = flagged items remain
+#   verify:        0 = stable ABI only, 1 = unstable API detected
+
 stable-abi-transform --mode=audit --format=json src/*.cu -- [flags]
 
 # Or verify already-migrated files
 stable-abi-transform --mode=verify --pytorch-root=$PYTORCH src/*.cu -- -std=c++20
+```
+
+### Using a config file with CLI overrides
+
+When `.stable-abi.yaml` exists, the tool auto-loads it. You can still override which files to process on the command line:
+
+```bash
+# Process a specific file using config's compiler settings
+stable-abi-transform src/my_kernel.cu
+
+# Config controls compiler_flags and include_paths;
+# -- flags on the CLI are ignored in config mode
 ```
 
 ## Regenerating rules
@@ -203,4 +223,4 @@ PYTORCH_DIR=/path/to/pytorch RESOURCE_DIR=/usr/lib/clang/19 bash test/run_tests.
 
 `PYTORCH_DIR` is required (points to your PyTorch source tree). `RESOURCE_DIR` defaults to `/usr/lib/clang/19`.
 
-13 test cases with input/expected pairs in `test/inputs/` and `test/expected/`. The test suite runs three passes: rewrite correctness, regex verification, and compile-based verification.
+13 test cases with input/expected pairs in `test/inputs/` and `test/expected/`. The test suite runs four passes: rewrite correctness, regex verification, exit code validation, and compile-based verification.

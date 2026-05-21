@@ -94,6 +94,56 @@ echo ""
 echo "Verification (regex): $verify_passed passed, $verify_failed failed"
 [ "$verify_failed" -gt 0 ] && exit 1
 
+# Exit code tests
+echo ""
+echo "--- Exit code tests ---"
+exitcode_passed=0
+exitcode_failed=0
+
+# Audit mode should exit 1 on file with unstable API
+if "$TOOL" --mode=audit "$INPUTS/smoke.cpp" "${COMMON_ARGS[@]}" > /dev/null 2>&1; then
+    echo "FAIL  audit-exit-code: expected exit 1 on unstable input, got 0"
+    exitcode_failed=$((exitcode_failed + 1))
+else
+    echo "PASS  audit-exit-code: exits 1 on unstable input"
+    exitcode_passed=$((exitcode_passed + 1))
+fi
+
+# Audit mode should exit 0 on already-stable file
+if "$TOOL" --mode=audit "$EXPECTED/smoke.cpp" "${COMMON_ARGS[@]}" > /dev/null 2>&1; then
+    echo "PASS  audit-clean-exit-code: exits 0 on stable file"
+    exitcode_passed=$((exitcode_passed + 1))
+else
+    echo "FAIL  audit-clean-exit-code: expected exit 0 on stable file, got non-zero"
+    exitcode_failed=$((exitcode_failed + 1))
+fi
+
+# Dry-run mode should exit 1 when findings exist
+if "$TOOL" --mode=rewrite --dry-run "$INPUTS/smoke.cpp" "${COMMON_ARGS[@]}" > /dev/null 2>&1; then
+    echo "FAIL  dry-run-exit-code: expected exit 1 on unstable input, got 0"
+    exitcode_failed=$((exitcode_failed + 1))
+else
+    echo "PASS  dry-run-exit-code: exits 1 on unstable input"
+    exitcode_passed=$((exitcode_passed + 1))
+fi
+
+# Missing source file should exit 1 with clear error
+if "$TOOL" --mode=audit /nonexistent/file.cpp "${COMMON_ARGS[@]}" 2>"$WORK_DIR/missing.stderr" > /dev/null; then
+    echo "FAIL  missing-file: expected exit 1, got 0"
+    exitcode_failed=$((exitcode_failed + 1))
+elif grep -q "source file not found" "$WORK_DIR/missing.stderr"; then
+    echo "PASS  missing-file: exits 1 with clear error"
+    exitcode_passed=$((exitcode_passed + 1))
+else
+    echo "FAIL  missing-file: exits non-zero but error message unclear"
+    cat "$WORK_DIR/missing.stderr"
+    exitcode_failed=$((exitcode_failed + 1))
+fi
+
+echo ""
+echo "Exit code tests: $exitcode_passed passed, $exitcode_failed failed"
+[ "$exitcode_failed" -gt 0 ] && exit 1
+
 # Compile-based verification: stricter check, may expose issues regex misses
 echo ""
 echo "--- Compile-based verification tests ---"

@@ -1,4 +1,5 @@
 #include "Verifier.h"
+#include "Helpers.h"
 #include <clang/Frontend/FrontendActions.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
@@ -144,6 +145,10 @@ std::vector<Violation> verifyStableAbi(const std::string &filepath,
     std::vector<Violation> violations;
 
     ShadowIncludeTree shadow(opts.pytorch_root);
+    if (shadow.path().empty()) {
+        violations.push_back({filepath, 0, 0, "", "failed to create shadow include tree"});
+        return violations;
+    }
 
     std::vector<std::string> args;
     args.push_back("-std=c++20");
@@ -193,7 +198,7 @@ std::vector<Violation> verifyStableAbi(const std::string &filepath,
 
 struct ForbiddenPattern {
     std::regex pattern;
-    const char *reason;
+    std::string_view reason;
 };
 
 static const std::vector<ForbiddenPattern> &getForbiddenPatterns() {
@@ -262,6 +267,14 @@ static const std::vector<ForbiddenPattern> &getForbiddenPatterns() {
          "unstable type: c10::optional (use std::optional)"},
         {std::regex(R"(\bc10::nullopt\b)"),
          "unstable value: c10::nullopt (use std::nullopt)"},
+        {std::regex(R"(\bc10::ArrayRef\b)"),
+         "unstable type: c10::ArrayRef (use torch::headeronly::HeaderOnlyArrayRef)"},
+        {std::regex(R"(\bc10::IntArrayRef\b)"),
+         "unstable type: c10::IntArrayRef (use torch::headeronly::IntHeaderOnlyArrayRef)"},
+        {std::regex(R"(\bat::IntArrayRef\b)"),
+         "unstable type: at::IntArrayRef (use torch::headeronly::IntHeaderOnlyArrayRef)"},
+        {std::regex(R"(\bc10::string_view\b)"),
+         "unstable type: c10::string_view (use std::string_view)"},
         {std::regex(R"(\btorch::TensorOptions\b)"),
          "unstable type: torch::TensorOptions (decompose into scalar_type, layout, device args)"},
         {std::regex(R"(\bat::Half\b)"),
@@ -334,7 +347,7 @@ std::vector<Violation> verifyStableAbiRegex(const std::string &filepath) {
             std::smatch match;
             if (std::regex_search(code, match, fp.pattern)) {
                 violations.push_back(
-                    {filepath, lineNo, 0, match[0].str(), fp.reason});
+                    {filepath, lineNo, 0, match[0].str(), std::string(fp.reason)});
             }
         }
     }
@@ -361,22 +374,6 @@ void printViolations(const std::vector<Violation> &violations) {
         llvm::outs() << "  " << v.text << "\n"
                       << "             " << v.reason << "\n";
     }
-}
-
-static std::string jsonEscape(const std::string &s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default: out += c;
-        }
-    }
-    return out;
 }
 
 void printViolationsJson(const std::vector<Violation> &violations) {

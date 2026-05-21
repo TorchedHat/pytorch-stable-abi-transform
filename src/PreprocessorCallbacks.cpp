@@ -4,18 +4,9 @@
 #include <clang/Basic/IdentifierTable.h>
 #include <clang/Lex/Lexer.h>
 #include <clang/Lex/MacroArgs.h>
+#include <clang/Lex/MacroInfo.h>
 
 namespace stable_abi {
-
-static void addReplacement(FileReplacements &fileRepls,
-                           const clang::SourceManager &SM,
-                           clang::SourceLocation loc, unsigned len,
-                           llvm::StringRef text) {
-    clang::tooling::Replacement R(SM, loc, len, text);
-    auto &repls = fileRepls[R.getFilePath().str()];
-    if (auto err = repls.add(R))
-        llvm::consumeError(std::move(err));
-}
 
 void PreprocessorCallbacks::InclusionDirective(
     clang::SourceLocation HashLoc, const clang::Token &IncludeTok,
@@ -72,7 +63,7 @@ void PreprocessorCallbacks::InclusionDirective(
                              includeText,
                              "unstable include — replace with stable equivalent "
                              "or remove if unused",
-                             true);
+                             FindingAction::Flag);
     }
 }
 
@@ -98,7 +89,7 @@ void PreprocessorCallbacks::finalizeIncludes() {
         std::string replacement;
         for (const auto &new_path : rule.new_paths) {
             if (new_path.empty())
-                continue;
+                break;
             if (emitted_includes_.count(std::string(new_path)))
                 continue;
             emitted_includes_.insert(std::string(new_path));
@@ -134,35 +125,45 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
                                          clang::SourceRange Range,
                                          const clang::MacroArgs *Args) {
     auto loc = MacroNameTok.getLocation();
-
-    if (!isInProjectScope(SM_, loc, project_root_))
-        return;
-
     auto name = MacroNameTok.getIdentifierInfo()->getName();
 
-    if (SM_.isMacroBodyExpansion(loc))
+    if (SM_.isMacroBodyExpansion(loc)) {
+        auto spellLoc = SM_.getSpellingLoc(loc);
+        bool isUnstablePrefix =
+            name.starts_with("TORCH_") || name.starts_with("AT_") ||
+            name.starts_with("C10_") || name == "PYBIND11_MODULE";
+        bool isDefinedInStableHeader = false;
+        if (isUnstablePrefix) {
+            if (auto *MI = MD.getMacroInfo()) {
+                auto defFile = SM_.getFilename(MI->getDefinitionLoc());
+                isDefinedInStableHeader =
+                    defFile.contains("torch/csrc/stable/") ||
+                    defFile.contains("torch/headeronly/") ||
+                    defFile.contains("torch/csrc/inductor/aoti_torch/");
+            }
+        }
+        if (isInProjectScope(SM_, spellLoc, project_root_) &&
+            isUnstablePrefix && !isDefinedInStableHeader) {
+            reporter_.addFinding(FindingKind::Macro, SM_, spellLoc, name,
+                                 "unstable macro in macro body",
+                                 FindingAction::Flag);
+        }
+        return;
+    }
+
+    if (!isInProjectScope(SM_, loc, project_root_))
         return;
 
     if (name == "PYBIND11_MODULE") {
         reporter_.addFinding(FindingKind::Macro, SM_, SM_.getSpellingLoc(loc),
                              "PYBIND11_MODULE",
                              "migrate to STABLE_TORCH_LIBRARY + TORCH_BOX",
-                             true);
+                             FindingAction::Flag);
         return;
     }
 
-    // TORCH_CHECK_EQ/NE/LT/GT/GE/LE(val1, val2) → STD_TORCH_CHECK((val1) OP (val2))
-    struct ComparisonMacro {
-        llvm::StringRef name;
-        llvm::StringRef op;
-    };
-    static constexpr ComparisonMacro kComparisonMacros[] = {
-        {"TORCH_CHECK_EQ", "=="},  {"TORCH_CHECK_NE", "!="},
-        {"TORCH_CHECK_LT", "<"},   {"TORCH_CHECK_GT", ">"},
-        {"TORCH_CHECK_GE", ">="},  {"TORCH_CHECK_LE", "<="},
-    };
-    for (const auto &cmp : kComparisonMacros) {
-        if (name != cmp.name)
+    for (const auto &cmp : kComparisonMacroRules) {
+        if (name != llvm::StringRef(cmp.name))
             continue;
         if (!Args)
             break;
@@ -190,12 +191,12 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
             reporter_.addFinding(FindingKind::Macro, SM_, loc,
                                  cmp.name,
                                  "could not extract arguments — rewrite manually",
-                                 true);
+                                 FindingAction::Flag);
             return;
         }
 
         std::string repl = "STD_TORCH_CHECK((" + lhs + ") " +
-                           cmp.op.str() + " (" + rhs + "))";
+                           std::string(cmp.op) + " (" + rhs + "))";
 
         reporter_.addFinding(FindingKind::Macro, SM_, loc,
                              cmp.name, "STD_TORCH_CHECK");
@@ -210,31 +211,18 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
         return;
     }
 
-    // AT_DISPATCH convenience macros → THO_DISPATCH_V2 with type collection arg
-    struct DispatchConvMacro {
-        llvm::StringRef old_name;
-        llvm::StringRef type_collection;
-    };
-    static constexpr DispatchConvMacro kDispatchConv[] = {
-        {"AT_DISPATCH_FLOATING_TYPES", "AT_FLOATING_TYPES"},
-        {"AT_DISPATCH_ALL_TYPES", "AT_ALL_TYPES"},
-        {"AT_DISPATCH_ALL_TYPES_AND_COMPLEX", "AT_ALL_TYPES_AND_COMPLEX"},
-        {"AT_DISPATCH_INTEGRAL_TYPES", "AT_INTEGRAL_TYPES"},
-        {"AT_DISPATCH_COMPLEX_TYPES", "AT_COMPLEX_TYPES"},
-        {"AT_DISPATCH_FLOAT8_TYPES", "AT_FLOAT8_TYPES"},
-    };
-    for (const auto &conv : kDispatchConv) {
-        if (name != conv.old_name)
+    for (const auto &conv : kDispatchConvRules) {
+        if (name != llvm::StringRef(conv.old_name))
             continue;
         std::string desc = std::string("THO_DISPATCH_V2(..., ") +
-                           conv.type_collection.str() + ")";
+                           std::string(conv.type_collection) + ")";
         reporter_.addFinding(FindingKind::Macro, SM_, loc,
                              conv.old_name, desc);
         if (rewrite_mode_) {
             auto nameLen = MacroNameTok.getLength();
             addReplacement(file_repls_, SM_, loc, nameLen, "THO_DISPATCH_V2");
             auto closeParen = SM_.getSpellingLoc(Range.getEnd());
-            std::string insert = std::string(", ") + conv.type_collection.str();
+            std::string insert = std::string(", ") + std::string(conv.type_collection);
             addReplacement(file_repls_, SM_, closeParen, 0, insert);
         }
         return;
@@ -257,32 +245,32 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
     }
 
     for (const auto &rule : kMacroRules) {
-        if (name != llvm::StringRef(rule.old_name))
+        if (name != llvm::StringRef(rule.from))
             continue;
 
         if (rule.flag_only) {
             std::string suggestion;
-            if (!rule.new_name.empty()) {
+            if (!rule.to.empty()) {
                 suggestion =
-                    std::string("use ") + std::string(rule.new_name);
+                    std::string("use ") + std::string(rule.to);
             } else {
                 suggestion =
                     "no stable equivalent — rewrite with STD_TORCH_CHECK";
             }
             reporter_.addFinding(FindingKind::Macro, SM_, loc,
-                                 std::string(rule.old_name), suggestion,
-                                 true);
+                                 std::string(rule.from), suggestion,
+                                 FindingAction::Flag);
             return;
         }
 
         reporter_.addFinding(FindingKind::Macro, SM_, loc,
-                             std::string(rule.old_name),
-                             std::string(rule.new_name));
+                             std::string(rule.from),
+                             std::string(rule.to));
 
         if (rewrite_mode_) {
             auto nameLen = MacroNameTok.getLength();
             addReplacement(file_repls_, SM_, loc, nameLen,
-                           rule.new_name);
+                           rule.to);
         }
         return;
     }

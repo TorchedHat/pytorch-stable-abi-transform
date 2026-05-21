@@ -1,0 +1,74 @@
+name: 'PyTorch Stable ABI Lint'
+description: 'Check C++/CUDA files for unstable PyTorch API usage'
+inputs:
+  mode:
+    description: 'audit or verify'
+    default: 'audit'
+  sources:
+    description: 'Files or directories to check (space-separated)'
+    required: true
+  pytorch-version:
+    description: 'PyTorch version for libtorch headers'
+    default: '2.11.0'
+  format:
+    description: 'Output format: text or json'
+    default: 'text'
+  extra-args:
+    description: 'Additional compiler flags passed after --'
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install LLVM 19
+      shell: bash
+      run: |
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+        sudo add-apt-repository "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main"
+        sudo apt-get update
+        sudo apt-get install -y libclang-19-dev libclang-cpp19-dev llvm-19-dev cmake ninja-build g++
+
+    - name: Cache libtorch headers
+      id: cache-libtorch
+      uses: actions/cache@v4
+      with:
+        path: /tmp/stable-abi-libtorch/include
+        key: libtorch-headers-${{ inputs.pytorch-version }}-cpu
+
+    - name: Download libtorch headers
+      if: steps.cache-libtorch.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        wget -qO /tmp/libtorch.zip "https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-${{ inputs.pytorch-version }}%2Bcpu.zip"
+        unzip -q /tmp/libtorch.zip 'libtorch/include/*' -d /tmp/stable-abi-libtorch-extract
+        mv /tmp/stable-abi-libtorch-extract/libtorch /tmp/stable-abi-libtorch
+        rm -f /tmp/libtorch.zip
+
+    - name: Build stable-abi-transform
+      shell: bash
+      run: |
+        TOOL_DIR="${{ github.action_path }}/.."
+        cmake -GNinja -B "$TOOL_DIR/build" -S "$TOOL_DIR"
+        cmake --build "$TOOL_DIR/build"
+
+    - name: Run lint
+      shell: bash
+      run: |
+        TOOL="${{ github.action_path }}/../build/stable-abi-transform"
+        PYTORCH="/tmp/stable-abi-libtorch/include"
+        RESOURCE_DIR=$(llvm-config-19 --prefix)/lib/clang/$(llvm-config-19 --version | cut -d. -f1)
+
+        ARGS="--mode=${{ inputs.mode }} --format=${{ inputs.format }}"
+        ARGS="$ARGS --pytorch-root=$PYTORCH"
+
+        for src in ${{ inputs.sources }}; do
+          if [ -d "$src" ]; then
+            ARGS="$ARGS --project-root=$src"
+          else
+            ARGS="$ARGS $src"
+          fi
+        done
+
+        "$TOOL" $ARGS -- -std=c++20 -resource-dir "$RESOURCE_DIR" \
+          -I"$PYTORCH" -I"$PYTORCH/torch/csrc/api/include" \
+          ${{ inputs.extra-args }}
