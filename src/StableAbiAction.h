@@ -16,6 +16,8 @@ enum class WriteMode { Audit, Rewrite, DryRun };
 struct ActionOptions {
     WriteMode write_mode = WriteMode::Audit;
     std::string project_root;
+    std::string output_dir;
+    IncludeGraph *include_graph = nullptr;
 
     bool generates_edits() const { return write_mode != WriteMode::Audit; }
 };

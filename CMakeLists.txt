@@ -69,6 +69,7 @@ add_executable(stable-abi-transform
     src/TransformerRules.cpp
     src/Reporter.cpp
     src/Verifier.cpp
+    src/DepGraph.cpp
 )
 
 target_include_directories(stable-abi-transform PRIVATE ${LLVM_INCLUDE_DIR})

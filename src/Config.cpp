@@ -60,6 +60,8 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
     makeAbsolute(out.pytorch_root, base);
     makeAbsolute(out.project_root, base);
     makeAbsolute(out.cuda_include, base);
+    expandVars(out.output_dir, out);
+    makeAbsolute(out.output_dir, base);
 
     auto warnUnexpanded = [](const std::string &s, llvm::StringRef field) {
         size_t pos = 0;
@@ -95,6 +97,7 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
     warnUnexpanded(out.pytorch_root, "pytorch_root");
     warnUnexpanded(out.project_root, "project_root");
     warnUnexpanded(out.cuda_include, "cuda_include");
+    warnUnexpanded(out.output_dir, "output_dir");
 
     return true;
 }
@@ -162,7 +165,7 @@ void printExampleConfig() {
 #   stable-abi-transform --config=.stable-abi.yaml
 #   stable-abi-transform   # auto-discovers .stable-abi.yaml in cwd
 
-# Operating mode: audit (report findings), rewrite (transform in-place), verify
+# Operating mode: audit (report findings), rewrite (transform in-place), verify, plan
 mode: audit
 
 # Output format: text or json
@@ -192,16 +195,22 @@ compiler_flags:
 # extra_includes:
 #   - ./csrc
 
-# Explicit source files (optional — auto-discovered from project_root if omitted)
+# Explicit source files or directories (optional — auto-discovered from project_root if omitted)
+# Directory entries are recursively walked for .cpp/.cu/.cuh files.
 # sources:
-#   - csrc/file1.cpp
-#   - csrc/file2.cu
+#   - csrc/attention/           # walk entire directory
+#   - csrc/cache.cu             # single file
 
 # Verification method: compile (default, requires pytorch_root) or regex
 verify_method: compile
 
 # CUDA include path (auto-detected if omitted)
 # cuda_include: /usr/local/cuda/include
+
+# Output directory for out-of-place rewrite (optional)
+# When set, transformed files are written here instead of in-place.
+# Only modified files are written, preserving relative paths from project_root.
+# output_dir: ./stable-output
 )";
 }
 

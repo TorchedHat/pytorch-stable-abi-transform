@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "DepGraph.h"
 #include "StableAbiAction.h"
 #include "Verifier.h"
 #include <array>
@@ -24,7 +25,7 @@ static llvm::cl::OptionCategory
 
 static llvm::cl::opt<std::string>
     ModeOpt("mode",
-            llvm::cl::desc("Operating mode: audit (default), rewrite, or verify"),
+            llvm::cl::desc("Operating mode: audit (default), rewrite, verify, or plan"),
             llvm::cl::init("audit"), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
@@ -57,6 +58,11 @@ static llvm::cl::opt<std::string>
                 llvm::cl::desc("Project root directory — rewrites files under this path (not just main file). "
                                "Also auto-discovers .cpp/.cu source files when no sources given."),
                 llvm::cl::init(""), llvm::cl::cat(ToolCategory));
+
+static llvm::cl::opt<std::string>
+    OutputDir("output-dir",
+              llvm::cl::desc("Write transformed files to this directory instead of in-place"),
+              llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
     ConfigFile("config",
@@ -97,6 +103,7 @@ static std::optional<Mode> parseMode(llvm::StringRef s) {
     if (s == "audit") return Mode::Audit;
     if (s == "rewrite") return Mode::Rewrite;
     if (s == "verify") return Mode::Verify;
+    if (s == "plan") return Mode::Plan;
     return std::nullopt;
 }
 
@@ -182,6 +189,24 @@ static std::vector<std::string> discoverSources(llvm::StringRef root) {
     return result;
 }
 
+static std::vector<std::string> expandSources(
+    const std::vector<std::string> &entries) {
+    std::set<std::string> seen;
+    std::vector<std::string> result;
+    for (const auto &entry : entries) {
+        if (llvm::sys::fs::is_directory(entry)) {
+            for (auto &f : discoverSources(entry)) {
+                if (seen.insert(f).second)
+                    result.push_back(std::move(f));
+            }
+        } else {
+            if (seen.insert(entry).second)
+                result.push_back(entry);
+        }
+    }
+    return result;
+}
+
 enum class ConfigResult { NotFound, Loaded, Error };
 
 static ConfigResult tryLoadConfig(stable_abi::Config &cfg, std::string &error) {
@@ -204,7 +229,7 @@ static bool applyCliOverrides(stable_abi::Config &cfg) {
         auto m = parseMode(ModeOpt.getValue());
         if (!m) {
             llvm::errs() << "error: invalid mode '" << ModeOpt.getValue()
-                         << "'. Must be one of: audit, rewrite, verify\n";
+                         << "'. Must be one of: audit, rewrite, verify, plan\n";
             return false;
         }
         cfg.mode = *m;
@@ -237,6 +262,8 @@ static bool applyCliOverrides(stable_abi::Config &cfg) {
     if (ExtraIncludes.getNumOccurrences() > 0)
         cfg.extra_includes = std::vector<std::string>(
             ExtraIncludes.begin(), ExtraIncludes.end());
+    if (OutputDir.getNumOccurrences() > 0)
+        cfg.output_dir = OutputDir.getValue();
     return true;
 }
 
@@ -264,7 +291,7 @@ static int runWithConfig(stable_abi::Config &cfg,
         projectRoot = std::string(abs);
     }
 
-    std::vector<std::string> sources = cfg.sources;
+    std::vector<std::string> sources = expandSources(cfg.sources);
     if (sources.empty() && !projectRoot.empty()) {
         if (!llvm::sys::fs::is_directory(projectRoot)) {
             llvm::errs() << "error: project root is not a directory: "
@@ -295,6 +322,11 @@ static int runWithConfig(stable_abi::Config &cfg,
                          cfg.verify_method, cfg.format);
     }
 
+    if (cfg.mode == Mode::Plan && projectRoot.empty()) {
+        llvm::errs() << "error: --project-root required for plan mode\n";
+        return 1;
+    }
+
     auto writeMode = (cfg.mode == Mode::Rewrite)
         ? (DryRun.getValue() ? stable_abi::WriteMode::DryRun
                              : stable_abi::WriteMode::Rewrite)
@@ -320,9 +352,8 @@ static int runWithConfig(stable_abi::Config &cfg,
             const clang::tooling::CommandLineArguments &Args,
             llvm::StringRef Filename) {
             clang::tooling::CommandLineArguments AdjustedArgs = Args;
-            if (Filename.ends_with(".cu") || Filename.ends_with(".cuh")) {
+            if (Filename.ends_with(".cu") || Filename.ends_with(".cuh"))
                 AdjustedArgs.push_back("--cuda-host-only");
-            }
             if (!resourceDir.empty()) {
                 AdjustedArgs.push_back("-resource-dir");
                 AdjustedArgs.push_back(resourceDir);
@@ -332,9 +363,25 @@ static int runWithConfig(stable_abi::Config &cfg,
             return AdjustedArgs;
         });
 
+    std::string outputDir = cfg.output_dir;
+    if (!outputDir.empty()) {
+        if (projectRoot.empty()) {
+            llvm::errs() << "error: --output-dir requires --project-root "
+                            "(needed to compute relative paths)\n";
+            return 1;
+        }
+        llvm::SmallString<256> abs(outputDir);
+        llvm::sys::fs::make_absolute(abs);
+        outputDir = std::string(abs);
+    }
+
+    stable_abi::IncludeGraph includeGraph;
+
     stable_abi::ActionOptions actionOpts{
         .write_mode = writeMode,
         .project_root = projectRoot,
+        .output_dir = outputDir,
+        .include_graph = (cfg.mode == Mode::Plan) ? &includeGraph : nullptr,
     };
     auto Factory = std::make_unique<stable_abi::StableAbiActionFactory>(
         actionOpts);
@@ -345,6 +392,15 @@ static int runWithConfig(stable_abi::Config &cfg,
     int result = Tool.run(Factory.get());
 
     auto &reporter = Factory->getReporter();
+
+    if (cfg.mode == Mode::Plan) {
+        stable_abi::DepGraph graph;
+        graph.build(includeGraph, reporter.findingsByFile());
+        auto plan = graph.computePlan();
+        graph.printPlan(plan, json);
+        return 0;
+    }
+
     reporter.suppressRedundantFlags();
     if (json) {
         reporter.printJson();
@@ -357,7 +413,19 @@ static int runWithConfig(stable_abi::Config &cfg,
     if (writeMode == stable_abi::WriteMode::Rewrite && result == 0) {
         if (!json)
             llvm::outs() << "\n--- Post-rewrite ABI verification ---\n";
-        int verify_result = runVerify(sources, resourceDir, cfg.pytorch_root,
+        std::vector<std::string> verifySources = sources;
+        if (!outputDir.empty()) {
+            verifySources.clear();
+            for (const auto &src : sources) {
+                llvm::SmallString<256> rel(src);
+                llvm::sys::path::replace_path_prefix(rel, projectRoot, "");
+                llvm::SmallString<256> out(outputDir);
+                llvm::sys::path::append(out, rel);
+                if (llvm::sys::fs::exists(out))
+                    verifySources.push_back(std::string(out));
+            }
+        }
+        int verify_result = runVerify(verifySources, resourceDir, cfg.pytorch_root,
                                       cfg.extra_includes, cfg.cuda_include,
                                       cfg.verify_method, cfg.format, true);
         if (verify_result > 0) {

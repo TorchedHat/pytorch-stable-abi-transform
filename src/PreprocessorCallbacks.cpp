@@ -16,6 +16,17 @@ void PreprocessorCallbacks::InclusionDirective(
     const clang::Module *SuggestedModule, bool ModuleImported,
     clang::SrcMgr::CharacteristicKind FileType) {
 
+    if (include_graph_ && File && !project_root_.empty()) {
+        auto includingFile = SM_.getFilename(SM_.getSpellingLoc(HashLoc));
+        auto includedFile = File->getName();
+        if (!includedFile.empty() &&
+            isInProjectScope(SM_, HashLoc, project_root_) &&
+            includedFile.starts_with(project_root_)) {
+            (*include_graph_)[std::string(includingFile)]
+                .insert(std::string(includedFile));
+        }
+    }
+
     if (!isInProjectScope(SM_, HashLoc, project_root_))
         return;
 

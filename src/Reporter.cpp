@@ -79,6 +79,13 @@ void Reporter::printJson() const {
     llvm::outs() << "}\n";
 }
 
+std::map<std::string, std::vector<Finding>> Reporter::findingsByFile() const {
+    std::map<std::string, std::vector<Finding>> result;
+    for (const auto &f : findings_)
+        result[f.file].push_back(f);
+    return result;
+}
+
 void Reporter::recordParseError(const std::string &file) {
     ++parse_error_count_;
     ++parse_errors_by_file_[file];

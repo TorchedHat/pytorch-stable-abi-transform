@@ -58,6 +58,9 @@ public:
 
     [[nodiscard]] bool hasNonIncludeFindingsForFile(std::string_view filename) const;
 
+    [[nodiscard]] std::map<std::string, std::vector<Finding>> findingsByFile() const;
+    [[nodiscard]] const std::vector<Finding> &findings() const { return findings_; }
+
     void recordParseError(const std::string &file);
     [[nodiscard]] size_t parseErrorCount() const { return parse_error_count_; }
     void printParseWarnings() const;
