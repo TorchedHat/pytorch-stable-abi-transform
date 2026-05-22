@@ -397,7 +397,7 @@ static int runWithConfig(stable_abi::Config &cfg,
         stable_abi::DepGraph graph;
         graph.build(includeGraph, reporter.findingsByFile());
         auto plan = graph.computePlan();
-        graph.printPlan(plan, json);
+        stable_abi::printMigrationPlan(plan, json);
         return 0;
     }
 

@@ -4,14 +4,11 @@
 #include "Reporter.h"
 #include "Rules.h"
 #include <clang/Lex/PPCallbacks.h>
-#include <map>
 #include <set>
 #include <string>
 #include <vector>
 
 namespace stable_abi {
-
-using IncludeGraph = std::map<std::string, std::set<std::string>>;
 
 class PreprocessorCallbacks : public clang::PPCallbacks {
 public:

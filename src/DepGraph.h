@@ -1,9 +1,8 @@
 #pragma once
 
-#include "PreprocessorCallbacks.h"
+#include "Helpers.h"
 #include "Reporter.h"
 #include <map>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -22,14 +21,14 @@ struct MigrationPlan {
     size_t critical_path_length = 0;
 };
 
+void printMigrationPlan(const MigrationPlan &plan, bool json);
+
 class DepGraph {
 public:
     void build(const IncludeGraph &includes,
                std::map<std::string, std::vector<Finding>> fileFindings);
 
     MigrationPlan computePlan() const;
-
-    void printPlan(const MigrationPlan &plan, bool json) const;
 
 private:
     std::set<std::string> nodes_;

@@ -2,6 +2,7 @@
 #include "Helpers.h"
 #include <algorithm>
 #include <llvm/Support/ErrorHandling.h>
+#include <llvm/Support/JSON.h>
 #include <llvm/Support/raw_ostream.h>
 #include <queue>
 
@@ -164,58 +165,63 @@ MigrationPlan DepGraph::computePlan() const {
     return plan;
 }
 
-void DepGraph::printPlan(const MigrationPlan &plan, bool json) const {
+void printMigrationPlan(const MigrationPlan &plan, bool json) {
+    bool fully_parallel = plan.rounds.size() <= 1;
+
     if (json) {
-        llvm::outs() << "{\n";
-        llvm::outs() << "  \"groups\": [\n";
-        for (size_t i = 0; i < plan.groups.size(); ++i) {
-            const auto &g = plan.groups[i];
-            llvm::outs() << "    {\"id\": " << g.id
-                         << ", \"files\": [";
-            for (size_t j = 0; j < g.files.size(); ++j) {
-                llvm::outs() << "\"" << jsonEscape(g.files[j]) << "\"";
-                if (j + 1 < g.files.size()) llvm::outs() << ", ";
-            }
-            llvm::outs() << "], \"findings\": " << g.total_findings
-                         << ", \"apis\": {";
-            size_t k = 0;
-            for (const auto &[api, count] : g.api_counts) {
-                llvm::outs() << "\"" << jsonEscape(api) << "\": " << count;
-                if (++k < g.api_counts.size()) llvm::outs() << ", ";
-            }
-            llvm::outs() << "}}";
-            if (i + 1 < plan.groups.size()) llvm::outs() << ",";
-            llvm::outs() << "\n";
+        llvm::json::OStream J(llvm::outs(), 2);
+        J.objectBegin();
+
+        J.attributeBegin("groups");
+        J.arrayBegin();
+        for (const auto &g : plan.groups) {
+            J.objectBegin();
+            J.attribute("id", static_cast<int64_t>(g.id));
+            J.attributeBegin("files");
+            J.arrayBegin();
+            for (const auto &f : g.files)
+                J.value(f);
+            J.arrayEnd();
+            J.attributeEnd();
+            J.attribute("findings", static_cast<int64_t>(g.total_findings));
+            J.attributeBegin("apis");
+            J.objectBegin();
+            for (const auto &[api, count] : g.api_counts)
+                J.attribute(api, static_cast<int64_t>(count));
+            J.objectEnd();
+            J.attributeEnd();
+            J.objectEnd();
         }
-        llvm::outs() << "  ],\n";
-        llvm::outs() << "  \"rounds\": [\n";
-        for (size_t i = 0; i < plan.rounds.size(); ++i) {
-            llvm::outs() << "    [";
-            for (size_t j = 0; j < plan.rounds[i].size(); ++j) {
-                llvm::outs() << plan.rounds[i][j];
-                if (j + 1 < plan.rounds[i].size()) llvm::outs() << ", ";
-            }
-            llvm::outs() << "]";
-            if (i + 1 < plan.rounds.size()) llvm::outs() << ",";
-            llvm::outs() << "\n";
+        J.arrayEnd();
+        J.attributeEnd();
+
+        J.attributeBegin("rounds");
+        J.arrayBegin();
+        for (const auto &round : plan.rounds) {
+            J.arrayBegin();
+            for (auto id : round)
+                J.value(static_cast<int64_t>(id));
+            J.arrayEnd();
         }
-        llvm::outs() << "  ],\n";
-        llvm::outs() << "  \"critical_path_length\": "
-                     << plan.critical_path_length << "\n";
-        llvm::outs() << "}\n";
+        J.arrayEnd();
+        J.attributeEnd();
+
+        J.attribute("critical_path_length",
+                    static_cast<int64_t>(plan.critical_path_length));
+        J.attribute("fully_parallel", fully_parallel);
+        J.objectEnd();
+        llvm::outs() << "\n";
         return;
     }
 
     llvm::outs() << "Migration plan: " << plan.groups.size() << " group"
-                 << (plan.groups.size() != 1 ? "s" : "") << ", "
-                 << plan.rounds.size() << " round"
-                 << (plan.rounds.size() != 1 ? "s" : "") << "\n\n";
+                 << (plan.groups.size() != 1 ? "s" : "");
+    if (fully_parallel && plan.groups.size() > 1)
+        llvm::outs() << " (all independent — transform in parallel)";
+    llvm::outs() << "\n\n";
 
     for (size_t ri = 0; ri < plan.rounds.size(); ++ri) {
-        llvm::outs() << "Round " << (ri + 1);
-        if (ri == 0 && plan.rounds[ri].size() > 1)
-            llvm::outs() << " (independent)";
-        llvm::outs() << ":\n";
+        llvm::outs() << "Round " << (ri + 1) << ":\n";
 
         for (auto gid : plan.rounds[ri]) {
             const auto &g = plan.groups[gid];
