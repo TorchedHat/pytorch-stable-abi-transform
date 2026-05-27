@@ -9,6 +9,11 @@
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
+#include <llvm/Support/ThreadPool.h>
+#include <llvm/Support/Threading.h>
+#include <atomic>
+#include <chrono>
+#include <mutex>
 #include <optional>
 #include <string_view>
 
@@ -78,6 +83,10 @@ static llvm::cl::opt<bool>
     DryRun("dry-run",
            llvm::cl::desc("Show unified diff of what --mode=rewrite would change, without modifying files"),
            llvm::cl::init(false), llvm::cl::cat(ToolCategory));
+
+static llvm::cl::opt<unsigned>
+    Jobs("jobs", llvm::cl::desc("Number of parallel TU processing threads (0 = auto, 1 = sequential)"),
+         llvm::cl::init(0), llvm::cl::cat(ToolCategory));
 
 static std::string detectResourceDir() {
     llvm::SmallString<256> path(LLVM_INSTALL_PREFIX);
@@ -264,6 +273,8 @@ static bool applyCliOverrides(stable_abi::Config &cfg) {
             ExtraIncludes.begin(), ExtraIncludes.end());
     if (OutputDir.getNumOccurrences() > 0)
         cfg.output_dir = OutputDir.getValue();
+    if (Jobs.getNumOccurrences() > 0)
+        cfg.jobs = Jobs.getValue();
     return true;
 }
 
@@ -344,25 +355,6 @@ static int runWithConfig(stable_abi::Config &cfg,
             ".", clangArgs);
         db = ownedDB.get();
     }
-    clang::tooling::ClangTool Tool(*db, sources);
-
-    auto pytorchIncs = stable_abi::pytorchIncludePaths(cfg.pytorch_root);
-    Tool.appendArgumentsAdjuster(
-        [&resourceDir, &pytorchIncs](
-            const clang::tooling::CommandLineArguments &Args,
-            llvm::StringRef Filename) {
-            clang::tooling::CommandLineArguments AdjustedArgs = Args;
-            if (Filename.ends_with(".cu") || Filename.ends_with(".cuh"))
-                AdjustedArgs.push_back("--cuda-host-only");
-            if (!resourceDir.empty()) {
-                AdjustedArgs.push_back("-resource-dir");
-                AdjustedArgs.push_back(resourceDir);
-            }
-            for (const auto &inc : pytorchIncs)
-                AdjustedArgs.push_back("-I" + inc);
-            return AdjustedArgs;
-        });
-
     std::string outputDir = cfg.output_dir;
     if (!outputDir.empty()) {
         if (projectRoot.empty()) {
@@ -375,21 +367,94 @@ static int runWithConfig(stable_abi::Config &cfg,
         outputDir = std::string(abs);
     }
 
+    auto pytorchIncs = stable_abi::pytorchIncludePaths(cfg.pytorch_root);
+    auto argsAdjuster =
+        [&resourceDir, &pytorchIncs](
+            const clang::tooling::CommandLineArguments &Args,
+            llvm::StringRef Filename) {
+            clang::tooling::CommandLineArguments AdjustedArgs = Args;
+            if (Filename.ends_with(".cu"))
+                AdjustedArgs.push_back("--cuda-host-only");
+            if (Filename.ends_with(".cuh")) {
+                // .cuh triggers Clang's CUDA driver which creates
+                // device+host compilation pairs and fails with
+                // "expected exactly one compiler job". Force C++
+                // since we only analyze host-side API usage.
+                auto it = std::find(AdjustedArgs.begin(), AdjustedArgs.end(),
+                                    Filename.str());
+                if (it != AdjustedArgs.end())
+                    AdjustedArgs.insert(it, "-xc++");
+                else
+                    AdjustedArgs.push_back("-xc++");
+            }
+            if (!resourceDir.empty()) {
+                AdjustedArgs.push_back("-resource-dir");
+                AdjustedArgs.push_back(resourceDir);
+            }
+            for (const auto &inc : pytorchIncs)
+                AdjustedArgs.push_back("-I" + inc);
+            return AdjustedArgs;
+        };
+
     stable_abi::IncludeGraph includeGraph;
+    std::mutex includeGraphMutex;
+    std::mutex writeMutex;
+
+    unsigned jobs = cfg.jobs;
+    if (jobs == 0)
+        jobs = llvm::hardware_concurrency().compute_thread_count();
+    bool generates_edits = (writeMode != stable_abi::WriteMode::Audit);
+    bool parallel = jobs > 1 && sources.size() > 1 && !generates_edits;
+    if (jobs > 1 && generates_edits) {
+        llvm::errs() << "note: --jobs ignored in rewrite mode "
+                        "(parallel rewrite is not yet safe)\n";
+    }
 
     stable_abi::ActionOptions actionOpts{
         .write_mode = writeMode,
         .project_root = projectRoot,
         .output_dir = outputDir,
         .include_graph = (cfg.mode == Mode::Plan) ? &includeGraph : nullptr,
+        .include_graph_mutex = parallel ? &includeGraphMutex : nullptr,
+        .write_mutex = parallel ? &writeMutex : nullptr,
     };
     auto Factory = std::make_unique<stable_abi::StableAbiActionFactory>(
         actionOpts);
 
-    stable_abi::ParseDiagConsumer diagConsumer(Factory->getReporter());
-    Tool.setDiagnosticConsumer(&diagConsumer);
+    int result;
+    if (parallel) {
+        llvm::DefaultThreadPool pool(
+            llvm::hardware_concurrency(jobs));
+        std::atomic<int> toolResult{0};
 
-    int result = Tool.run(Factory.get());
+        llvm::errs() << "note: processing " << sources.size()
+                     << " files with " << jobs << " threads\n";
+        auto t0 = std::chrono::steady_clock::now();
+
+        for (const auto &source : sources) {
+            pool.async([&, source]() {
+                clang::tooling::ClangTool tool(*db, {source});
+                tool.appendArgumentsAdjuster(argsAdjuster);
+                stable_abi::ParseDiagConsumer diag(Factory->getReporter());
+                tool.setDiagnosticConsumer(&diag);
+                int r = tool.run(Factory.get());
+                if (r != 0)
+                    toolResult.store(1, std::memory_order_relaxed);
+            });
+        }
+        pool.wait();
+        auto elapsed = std::chrono::steady_clock::now() - t0;
+        auto secs = std::chrono::duration<double>(elapsed).count();
+        llvm::errs() << llvm::format("note: processed %zu files in %.1fs\n",
+                                     sources.size(), secs);
+        result = toolResult.load();
+    } else {
+        clang::tooling::ClangTool Tool(*db, sources);
+        Tool.appendArgumentsAdjuster(argsAdjuster);
+        stable_abi::ParseDiagConsumer diagConsumer(Factory->getReporter());
+        Tool.setDiagnosticConsumer(&diagConsumer);
+        result = Tool.run(Factory.get());
+    }
 
     auto &reporter = Factory->getReporter();
 

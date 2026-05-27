@@ -291,6 +291,79 @@ echo ""
 echo "Feature tests: $feat_passed passed, $feat_failed failed"
 [ "$feat_failed" -gt 0 ] && exit 1
 
+# Parallel determinism: --jobs=2 must produce identical findings to --jobs=1
+echo ""
+echo "--- Parallel determinism test ---"
+par_passed=0
+par_failed=0
+
+seq_out="$WORK_DIR/seq_audit.json"
+par_out="$WORK_DIR/par_audit.json"
+"$TOOL" --mode=audit --format=json --jobs=1 \
+    "$INPUTS/smoke.cpp" "$INPUTS/types.cpp" "${COMMON_ARGS[@]}" \
+    > "$seq_out" 2>/dev/null || true
+"$TOOL" --mode=audit --format=json --jobs=2 \
+    "$INPUTS/smoke.cpp" "$INPUTS/types.cpp" "${COMMON_ARGS[@]}" \
+    > "$par_out" 2>/dev/null || true
+
+seq_rewrites=$(python3 -c "import json; print(json.load(open('$seq_out'))['rewrites'])")
+par_rewrites=$(python3 -c "import json; print(json.load(open('$par_out'))['rewrites'])")
+seq_flags=$(python3 -c "import json; print(json.load(open('$seq_out'))['flags'])")
+par_flags=$(python3 -c "import json; print(json.load(open('$par_out'))['flags'])")
+
+if [ "$seq_rewrites" = "$par_rewrites" ] && [ "$seq_flags" = "$par_flags" ]; then
+    echo "PASS  parallel-determinism: jobs=1 ($seq_rewrites rewrites, $seq_flags flags) == jobs=2 ($par_rewrites rewrites, $par_flags flags)"
+    par_passed=$((par_passed + 1))
+else
+    echo "FAIL  parallel-determinism: jobs=1 ($seq_rewrites/$seq_flags) != jobs=2 ($par_rewrites/$par_flags)"
+    par_failed=$((par_failed + 1))
+fi
+
+echo ""
+echo "Parallel tests: $par_passed passed, $par_failed failed"
+[ "$par_failed" -gt 0 ] && exit 1
+
+# Macro body detection: unstable API inside #define must be flagged, not silently dropped
+echo ""
+echo "--- Macro body detection test ---"
+macro_passed=0
+macro_failed=0
+
+MACRO_INPUT="$WORK_DIR/macro_body_test.cpp"
+cat > "$MACRO_INPUT" << 'MACROEOF'
+#include <torch/all.h>
+
+#define CHECK_CPU(x) TORCH_CHECK(x.device().type() == at::kCPU, #x " must be CPU")
+#define GET_PTR(x) ((x).data_ptr<float>())
+#define CLONE_IT(x) ((x).clone())
+
+void foo(torch::Tensor& t) {
+    CHECK_CPU(t);
+    float* p = GET_PTR(t);
+    auto c = CLONE_IT(t);
+}
+MACROEOF
+
+macro_out=$("$TOOL" --mode=audit --format=json "$MACRO_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+macro_flags=$(echo "$macro_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(sum(1 for f in d['findings']
+          if f['flag'] and 'macro body' in f['new']))
+")
+if [ "$macro_flags" -ge 2 ]; then
+    echo "PASS  macro-body-detection: $macro_flags macro body flags found"
+    macro_passed=$((macro_passed + 1))
+else
+    echo "FAIL  macro-body-detection: expected >= 2 macro body flags, got $macro_flags"
+    echo "$macro_out"
+    macro_failed=$((macro_failed + 1))
+fi
+
+echo ""
+echo "Macro body tests: $macro_passed passed, $macro_failed failed"
+[ "$macro_failed" -gt 0 ] && exit 1
+
 # Compile-based verification: stricter check, may expose issues regex misses
 echo ""
 echo "--- Compile-based verification tests ---"

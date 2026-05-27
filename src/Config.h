@@ -22,6 +22,7 @@ struct Config {
     VerifyMethod verify_method = VerifyMethod::Compile;
     std::string cuda_include;
     std::string output_dir;
+    unsigned jobs = 0;
 };
 
 [[nodiscard]] bool loadConfig(const std::string &path, Config &out, std::string &error);
@@ -71,6 +72,7 @@ template <> struct MappingTraits<stable_abi::Config> {
         io.mapOptional("verify_method", c.verify_method);
         io.mapOptional("cuda_include", c.cuda_include);
         io.mapOptional("output_dir", c.output_dir);
+        io.mapOptional("jobs", c.jobs);
     }
 };
 

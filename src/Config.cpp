@@ -211,6 +211,9 @@ verify_method: compile
 # When set, transformed files are written here instead of in-place.
 # Only modified files are written, preserving relative paths from project_root.
 # output_dir: ./stable-output
+
+# Parallel TU processing (0 = auto-detect, 1 = sequential)
+# jobs: 0
 )";
 }
 

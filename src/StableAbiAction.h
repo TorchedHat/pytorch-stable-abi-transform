@@ -8,6 +8,7 @@
 #include <clang/Tooling/Refactoring/AtomicChange.h>
 #include <clang/Tooling/Transformer/Transformer.h>
 #include <clang/Tooling/Tooling.h>
+#include <mutex>
 
 namespace stable_abi {
 
@@ -18,6 +19,8 @@ struct ActionOptions {
     std::string project_root;
     std::string output_dir;
     IncludeGraph *include_graph = nullptr;
+    std::mutex *include_graph_mutex = nullptr;
+    std::mutex *write_mutex = nullptr;
 
     bool generates_edits() const { return write_mode != WriteMode::Audit; }
 };

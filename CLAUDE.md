@@ -54,6 +54,7 @@ $TOOL --mode=plan --project-root=./csrc -- [same flags]
 | `--project-root` | Process all C++/CUDA files under this directory |
 | `--output-dir` | Write transformed files here instead of in-place |
 | `--dry-run` | Show unified diff without modifying files |
+| `--jobs` | Parallel TU threads (0=auto, 1=sequential). Only audit and plan modes run in parallel; rewrite always runs sequentially. |
 
 ### YAML config
 
@@ -65,6 +66,30 @@ $TOOL                 # auto-loads .stable-abi.yaml
 ```
 
 Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `verify_method`, `cuda_include`, `extra_includes`, `sources`, `include_paths`, `output_dir`. Sources can be files or directories (directories are recursively walked for .cpp/.cu/.cuh files). PyTorch include paths are auto-derived from `pytorch_root` — set it to `auto` to detect from pip-installed torch.
+
+### .cuh files
+
+`.cuh` files are parsed as C++ (no CUDA toolchain required). CUDA device-only constructs cause parse errors that are reported but do not block analysis of host-side API calls.
+
+### Migration progress
+
+`scripts/migration_progress.py` measures how close a project is to stable ABI adoption:
+
+```bash
+# Audit then report progress
+python3 scripts/migration_progress.py /path/to/project --source-dir csrc
+
+# From pre-computed audit JSON
+python3 scripts/migration_progress.py --audit-json audit.json --source-dir csrc
+
+# With dependency-aware PR grouping (from --mode=plan --format=json)
+python3 scripts/migration_progress.py --audit-json audit.json --source-dir csrc \
+  --plan-json plan.json
+
+# Machine-readable
+python3 scripts/migration_progress.py --audit-json audit.json --source-dir csrc \
+  --format json
+```
 
 ## Test
 

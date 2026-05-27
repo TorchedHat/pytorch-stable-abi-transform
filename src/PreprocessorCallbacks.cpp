@@ -23,8 +23,14 @@ void PreprocessorCallbacks::InclusionDirective(
         if (!includedFile.empty() &&
             isInProjectScope(SM_, HashLoc, project_root_) &&
             includedFile.starts_with(project_root_)) {
-            (*include_graph_)[std::string(includingFile)]
-                .insert(std::string(includedFile));
+            if (include_graph_mutex_) {
+                std::lock_guard<std::mutex> lock(*include_graph_mutex_);
+                (*include_graph_)[std::string(includingFile)]
+                    .insert(std::string(includedFile));
+            } else {
+                (*include_graph_)[std::string(includingFile)]
+                    .insert(std::string(includedFile));
+            }
         }
     }
 

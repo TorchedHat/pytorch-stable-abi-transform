@@ -56,7 +56,8 @@ StableAbiFrontendAction::CreateASTConsumer(clang::CompilerInstance &CI,
 
     auto ppCallbacks = std::make_unique<PreprocessorCallbacks>(
         file_repls_, reporter_, CI.getSourceManager(), CI.getLangOpts(),
-        opts_.generates_edits(), opts_.project_root, opts_.include_graph);
+        opts_.generates_edits(), opts_.project_root, opts_.include_graph,
+        opts_.include_graph_mutex);
     auto *ppRaw = ppCallbacks.get();
     CI.getPreprocessor().addPPCallbacks(std::move(ppCallbacks));
 
@@ -153,6 +154,9 @@ void StableAbiFrontendAction::EndSourceFileAction() {
                 llvm::errs() << "warning: failed to apply replacements to "
                              << filename << "\n";
         }
+        std::unique_lock<std::mutex> writeLock;
+        if (opts_.write_mutex)
+            writeLock = std::unique_lock<std::mutex>(*opts_.write_mutex);
         if (opts_.write_mode == WriteMode::DryRun) {
             auto &SM = rewriter_.getSourceMgr();
             for (auto it = rewriter_.buffer_begin();

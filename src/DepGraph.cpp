@@ -159,7 +159,6 @@ MigrationPlan DepGraph::computePlan() const {
     for (size_t i = 0; i < parts.size(); ++i) {
         MigrationGroup group;
         group.id = i;
-        group.files = parts[i];
         for (const auto &file : parts[i]) {
             bool isHeader = llvm::StringRef(file).ends_with(".h") ||
                             llvm::StringRef(file).ends_with(".cuh") ||
@@ -255,8 +254,8 @@ void printMigrationPlan(const MigrationPlan &plan, bool json) {
             else
                 llvm::outs() << gid;
             llvm::outs() << " ("
-                         << g.files.size() << " file"
-                         << (g.files.size() != 1 ? "s" : "")
+                         << g.file_count() << " file"
+                         << (g.file_count() != 1 ? "s" : "")
                          << ", " << g.total_findings << " finding"
                          << (g.total_findings != 1 ? "s" : "") << "):\n";
             for (const auto &f : g.sources)
