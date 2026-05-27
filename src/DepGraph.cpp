@@ -3,22 +3,33 @@
 #include <algorithm>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/JSON.h>
+#include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
 #include <queue>
 
 namespace stable_abi {
 
+static std::string canonicalize(llvm::StringRef path) {
+    llvm::SmallString<256> result(path);
+    llvm::sys::path::remove_dots(result, true);
+    return std::string(result);
+}
+
 void DepGraph::build(const IncludeGraph &includes,
                      std::map<std::string, std::vector<Finding>> fileFindings) {
-    findings_ = std::move(fileFindings);
+    for (auto &[file, findings] : fileFindings)
+        findings_[canonicalize(file)] = std::move(findings);
 
     for (const auto &[file, _] : findings_)
         nodes_.insert(file);
 
-    // Compute transitive edges between files with findings, traversing
-    // through any project-scope file (even those without findings).
-    // This captures: a.cu → bridge.h (no findings) → types.h (findings)
-    // as a transitive edge a.cu → types.h.
+    IncludeGraph canonIncludes;
+    for (const auto &[from, tos] : includes) {
+        auto cFrom = canonicalize(from);
+        for (const auto &to : tos)
+            canonIncludes[cFrom].insert(canonicalize(to));
+    }
+
     for (const auto &start : nodes_) {
         std::set<std::string> visited;
         std::queue<std::string> q;
@@ -26,8 +37,8 @@ void DepGraph::build(const IncludeGraph &includes,
         visited.insert(start);
         while (!q.empty()) {
             auto cur = q.front(); q.pop();
-            auto it = includes.find(cur);
-            if (it == includes.end()) continue;
+            auto it = canonIncludes.find(cur);
+            if (it == canonIncludes.end()) continue;
             for (const auto &next : it->second) {
                 if (visited.count(next)) continue;
                 visited.insert(next);
@@ -150,6 +161,13 @@ MigrationPlan DepGraph::computePlan() const {
         group.id = i;
         group.files = parts[i];
         for (const auto &file : parts[i]) {
+            bool isHeader = llvm::StringRef(file).ends_with(".h") ||
+                            llvm::StringRef(file).ends_with(".cuh") ||
+                            llvm::StringRef(file).ends_with(".hpp");
+            if (isHeader)
+                group.headers.push_back(file);
+            else
+                group.sources.push_back(file);
             auto it = findings_.find(file);
             if (it == findings_.end()) continue;
             for (const auto &f : it->second) {
@@ -177,9 +195,15 @@ void printMigrationPlan(const MigrationPlan &plan, bool json) {
         for (const auto &g : plan.groups) {
             J.objectBegin();
             J.attribute("id", static_cast<int64_t>(g.id));
-            J.attributeBegin("files");
+            J.attributeBegin("sources");
             J.arrayBegin();
-            for (const auto &f : g.files)
+            for (const auto &f : g.sources)
+                J.value(f);
+            J.arrayEnd();
+            J.attributeEnd();
+            J.attributeBegin("headers");
+            J.arrayBegin();
+            for (const auto &f : g.headers)
                 J.value(f);
             J.arrayEnd();
             J.attributeEnd();
@@ -235,8 +259,13 @@ void printMigrationPlan(const MigrationPlan &plan, bool json) {
                          << (g.files.size() != 1 ? "s" : "")
                          << ", " << g.total_findings << " finding"
                          << (g.total_findings != 1 ? "s" : "") << "):\n";
-            for (const auto &f : g.files)
+            for (const auto &f : g.sources)
                 llvm::outs() << "    " << f << "\n";
+            if (!g.headers.empty()) {
+                llvm::outs() << "    Headers:\n";
+                for (const auto &f : g.headers)
+                    llvm::outs() << "      " << f << "\n";
+            }
             if (!g.api_counts.empty()) {
                 llvm::outs() << "    APIs: ";
                 size_t k = 0;

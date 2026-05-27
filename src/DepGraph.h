@@ -11,6 +11,8 @@ namespace stable_abi {
 struct MigrationGroup {
     size_t id = 0;
     std::vector<std::string> files;
+    std::vector<std::string> sources;
+    std::vector<std::string> headers;
     std::map<std::string, size_t> api_counts;
     size_t total_findings = 0;
 };

@@ -5,6 +5,7 @@
 #include <clang/Lex/Lexer.h>
 #include <clang/Lex/MacroArgs.h>
 #include <clang/Lex/MacroInfo.h>
+#include <llvm/Support/Path.h>
 
 namespace stable_abi {
 

@@ -218,6 +218,8 @@ d = json.load(open('$plan_out'))
 assert d['fully_parallel'] == True
 assert len(d['groups']) == 1
 assert d['groups'][0]['findings'] > 0
+assert 'sources' in d['groups'][0]
+assert 'headers' in d['groups'][0]
 " 2>/dev/null; then
         echo "PASS  plan-json: valid JSON, 1 group, fully_parallel"
         feat_passed=$((feat_passed + 1))
