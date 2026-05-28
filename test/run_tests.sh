@@ -345,17 +345,26 @@ void foo(torch::Tensor& t) {
 MACROEOF
 
 macro_out=$("$TOOL" --mode=audit --format=json "$MACRO_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
-macro_flags=$(echo "$macro_out" | python3 -c "
+macro_result=$(echo "$macro_out" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-print(sum(1 for f in d['findings']
-          if f['flag'] and 'macro body' in f['new']))
+mb = [f for f in d['findings'] if f['flag'] and 'macro body' in f['new']]
+kinds = {f['kind'] for f in mb}
+required = {'DPTR', 'M2F'}
+missing = required - kinds
+if missing:
+    print(f'FAIL missing kinds: {missing}')
+elif len(mb) < 2:
+    print(f'FAIL only {len(mb)} flags, expected >= 2')
+else:
+    print(f'PASS {len(mb)}')
 ")
-if [ "$macro_flags" -ge 2 ]; then
-    echo "PASS  macro-body-detection: $macro_flags macro body flags found"
+if echo "$macro_result" | grep -q "^PASS"; then
+    count=$(echo "$macro_result" | grep -oP '\d+')
+    echo "PASS  macro-body-detection: $count flags across DPTR, M2F"
     macro_passed=$((macro_passed + 1))
 else
-    echo "FAIL  macro-body-detection: expected >= 2 macro body flags, got $macro_flags"
+    echo "FAIL  macro-body-detection: $macro_result"
     echo "$macro_out"
     macro_failed=$((macro_failed + 1))
 fi
@@ -363,6 +372,62 @@ fi
 echo ""
 echo "Macro body tests: $macro_passed passed, $macro_failed failed"
 [ "$macro_failed" -gt 0 ] && exit 1
+
+# Completeness tests: every rule category fires, catch-all works
+echo ""
+echo "--- Completeness tests ---"
+comp_passed=0
+comp_failed=0
+
+# 1. Every finding kind must appear when auditing completeness.cpp
+comp_out=$("$TOOL" --mode=audit --format=json "$INPUTS/completeness.cpp" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+comp_result=$(echo "$comp_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+kinds = {f['kind'] for f in d['findings']}
+required = {'TYPE', 'STYPE', 'DPTR', 'M2F', 'FUNC', 'MACRO', 'INCL'}
+missing = required - kinds
+if missing:
+    print(f'FAIL missing: {missing}')
+else:
+    print(f'PASS {len(d[\"findings\"])} findings, all {len(required)} kinds covered')
+")
+if echo "$comp_result" | grep -q "^PASS"; then
+    echo "PASS  rule-coverage: $comp_result"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  rule-coverage: $comp_result"
+    comp_failed=$((comp_failed + 1))
+fi
+
+# 2. Catch-all: unknown unstable APIs must be flagged
+CATCHALL_INPUT="$WORK_DIR/catchall_test.cpp"
+cat > "$CATCHALL_INPUT" << 'CATCHALLEOF'
+#include <torch/all.h>
+
+void foo() {
+    auto a = at::randn({3});
+    auto b = at::ones({3});
+}
+CATCHALLEOF
+
+catchall_out=$("$TOOL" --mode=audit --format=json "$CATCHALL_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+catchall_flags=$(echo "$catchall_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(sum(1 for f in d['findings'] if f['kind'] == 'FLAG'))
+")
+if [ "$catchall_flags" -ge 2 ]; then
+    echo "PASS  catch-all: $catchall_flags unknown unstable APIs flagged"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  catch-all: expected >= 2 flags, got $catchall_flags"
+    comp_failed=$((comp_failed + 1))
+fi
+
+echo ""
+echo "Completeness tests: $comp_passed passed, $comp_failed failed"
+[ "$comp_failed" -gt 0 ] && exit 1
 
 # Compile-based verification: stricter check, may expose issues regex misses
 echo ""
