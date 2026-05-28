@@ -53,3 +53,44 @@ jobs:
           RESOURCE_DIR=$(llvm-config-19 --prefix)/lib/clang/$(llvm-config-19 --version | cut -d. -f1) \
           CUDA_INCLUDE=${{ steps.cuda.outputs.CUDA_PATH }}/include \
           bash test/run_tests.sh
+
+  test-pip:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 19
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          sudo add-apt-repository "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main"
+          sudo apt-get update
+          sudo apt-get install -y libclang-19-dev libclang-cpp19-dev llvm-19-dev cmake ninja-build g++
+
+      - name: Install CUDA headers
+        id: cuda
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: '12.9.0'
+          method: 'network'
+          sub-packages: '["cudart-dev", "crt"]'
+          non-cuda-sub-packages: '["libcublas-dev", "libcusparse-dev", "libcusolver-dev"]'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-torch-cpu-${{ runner.os }}
+
+      - name: Install PyTorch (pip, CPU-only)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build
+        run: |
+          cmake -GNinja -B build -S .
+          cmake --build build
+
+      - name: Test (auto-detect pytorch from pip)
+        run: |
+          RESOURCE_DIR=$(llvm-config-19 --prefix)/lib/clang/$(llvm-config-19 --version | cut -d. -f1) \
+          CUDA_INCLUDE=${{ steps.cuda.outputs.CUDA_PATH }}/include \
+          bash test/run_tests.sh

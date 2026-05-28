@@ -9,18 +9,23 @@ EXPECTED="$SCRIPT_DIR/expected"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-PYTORCH_DIR="${PYTORCH_DIR:?Set PYTORCH_DIR to your PyTorch source root}"
+if [ -z "${PYTORCH_DIR:-}" ]; then
+    PYTORCH_DIR=$(python3 -c "import torch, os; print(os.path.join(torch.__path__[0], 'include'))" 2>/dev/null) \
+        || { echo "error: Set PYTORCH_DIR or pip install torch"; exit 1; }
+    echo "note: auto-detected PYTORCH_DIR=$PYTORCH_DIR"
+fi
 RESOURCE_DIR="${RESOURCE_DIR:-/usr/lib/clang/19}"
 
 CUDA_INCLUDE="${CUDA_INCLUDE:-/usr/local/cuda/include}"
+
+PYTORCH_ARGS=(-I"$PYTORCH_DIR" -I"$PYTORCH_DIR/torch/csrc/api/include")
+[ -d "$PYTORCH_DIR/torch/include" ] && PYTORCH_ARGS+=(-I"$PYTORCH_DIR/torch/include")
 
 COMMON_ARGS=(
     -- -std=c++20
     -resource-dir "$RESOURCE_DIR"
     -DC10_USING_CUSTOM_GENERATED_MACROS
-    -I"$PYTORCH_DIR/torch/csrc/api/include"
-    -I"$PYTORCH_DIR"
-    -I"$PYTORCH_DIR/torch/include"
+    "${PYTORCH_ARGS[@]}"
     -I"$CUDA_INCLUDE"
 )
 

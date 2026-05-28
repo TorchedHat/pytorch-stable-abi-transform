@@ -7,7 +7,7 @@
 - Linux (tested on Fedora 41)
 - LLVM/Clang 19 development libraries, CUDA 12.9 headers
 - C++20 compiler
-- PyTorch source tree or install root (for include paths and verification)
+- PyTorch headers (via `pip install torch`, libtorch download, or source tree)
 
 ### Build
 
@@ -34,16 +34,13 @@ Example config:
 
 ```yaml
 mode: audit
-pytorch_root: /path/to/pytorch
+pytorch_root: auto                        # detects from pip-installed torch
 project_root: ./csrc
 
 compiler_flags:
   - -std=c++20
 
 include_paths:
-  - ${pytorch_root}/torch/csrc/api/include
-  - ${pytorch_root}
-  - ${pytorch_root}/torch/include
   - /usr/local/cuda/include
   - ./csrc/inc                            # project-specific headers
 
@@ -51,7 +48,7 @@ extra_includes:                           # for verify mode
   - ./csrc
 ```
 
-At minimum you need: `pytorch_root`, the three PyTorch include paths, CUDA include path, and the project's own header directories. The `${pytorch_root}` variable is expanded automatically.
+PyTorch include paths are auto-derived from `pytorch_root` — you only need project-specific paths in `include_paths`. Set `pytorch_root` to `auto` (detects from `pip install torch`), or an explicit path to a PyTorch source tree or libtorch download.
 
 When `.stable-abi.yaml` exists in the working directory, all commands auto-load it — no flags needed:
 

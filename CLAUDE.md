@@ -37,7 +37,7 @@ $TOOL --mode=verify --verify-method=regex file.cu -- -std=c++20
 
 | Flag | Description |
 |------|-------------|
-| `--pytorch-root` | Path to PyTorch source/install root (required for compile-verify) |
+| `--pytorch-root` | Path to PyTorch root, or "auto" to detect from pip-installed torch |
 | `--extra-includes` | Project-specific -I paths (e.g., the project's own csrc/) |
 | `--cuda-include` | CUDA include path (auto-detected from /usr/local/cuda/include) |
 | `--verify-method` | "compile" (default) or "regex" |
@@ -55,7 +55,7 @@ $TOOL --init-config   # generates starter config
 $TOOL                 # auto-loads .stable-abi.yaml
 ```
 
-Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `verify_method`, `cuda_include`, `extra_includes`, `sources`.
+Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `verify_method`, `cuda_include`, `extra_includes`, `sources`, `include_paths`. PyTorch include paths are auto-derived from `pytorch_root` — set it to `auto` to detect from pip-installed torch.
 
 ## Test
 

@@ -3,6 +3,7 @@
 #include <llvm/Support/Path.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/raw_ostream.h>
+#include <cstdio>
 
 namespace stable_abi {
 
@@ -98,6 +99,62 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
     return true;
 }
 
+static std::string detectPytorchRoot() {
+    FILE *pipe = popen(
+        "python3 -c \"import torch, os; "
+        "print(os.path.join(torch.__path__[0], 'include'))\" 2>/dev/null",
+        "r");
+    if (!pipe)
+        return "";
+    char buf[512];
+    std::string result;
+    while (fgets(buf, sizeof(buf), pipe))
+        result += buf;
+    int status = pclose(pipe);
+    if (status != 0)
+        return "";
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+        result.pop_back();
+    return result;
+}
+
+std::vector<std::string> pytorchIncludePaths(const std::string &root) {
+    if (root.empty())
+        return {};
+    std::vector<std::string> paths;
+    paths.push_back(root);
+    std::string apiInclude = root + "/torch/csrc/api/include";
+    if (llvm::sys::fs::is_directory(apiInclude))
+        paths.push_back(apiInclude);
+    std::string torchInclude = root + "/torch/include";
+    if (llvm::sys::fs::is_directory(torchInclude))
+        paths.push_back(torchInclude);
+    return paths;
+}
+
+bool resolvePytorchRoot(Config &cfg, std::string &error) {
+    if (cfg.pytorch_root == "auto") {
+        cfg.pytorch_root = detectPytorchRoot();
+        if (cfg.pytorch_root.empty()) {
+            error = "pytorch_root=auto but python3 -c 'import torch' failed. "
+                    "Install torch or set pytorch_root explicitly.";
+            return false;
+        }
+        llvm::errs() << "note: auto-detected pytorch_root: "
+                     << cfg.pytorch_root << "\n";
+    }
+    if (!cfg.pytorch_root.empty()) {
+        std::string stableDir = cfg.pytorch_root + "/torch/csrc/stable";
+        if (!llvm::sys::fs::is_directory(stableDir)) {
+            error = "pytorch_root does not contain stable ABI headers "
+                    "(torch/csrc/stable/). Requires PyTorch >= 2.6. "
+                    "Path: " + cfg.pytorch_root;
+            return false;
+        }
+    }
+    return true;
+}
+
 void printExampleConfig() {
     llvm::outs() << R"(# .stable-abi.yaml — stable-abi-transform project config
 #
@@ -111,8 +168,11 @@ mode: audit
 # Output format: text or json
 format: text
 
-# Path to PyTorch source/install root (required for compile-based verify)
-pytorch_root: /path/to/pytorch
+# Path to PyTorch root. PyTorch include paths are auto-derived from this.
+#   "auto"               — detect from pip-installed torch (recommended)
+#   /path/to/pytorch     — PyTorch source tree
+#   /path/to/libtorch/include — libtorch download or pip site-packages
+pytorch_root: auto
 
 # Project root — rewrites files under this path (headers included).
 # Also auto-discovers .cpp/.cu source files when 'sources' is omitted.
@@ -122,14 +182,11 @@ project_root: ./csrc
 compiler_flags:
   - -std=c++20
 
-# Include paths (each becomes a -I flag)
-# Use ${pytorch_root} and ${project_root} for variable expansion.
-include_paths:
-  - ${pytorch_root}/torch/csrc/api/include
-  - ${pytorch_root}
-  - ${pytorch_root}/torch/include
-  - /usr/local/cuda/include
-  # - ./csrc/inc
+# Additional include paths for your project (PyTorch paths are auto-derived
+# from pytorch_root — you only need project-specific paths here).
+# include_paths:
+#   - ./csrc/inc
+#   - /usr/local/cuda/include
 
 # Additional include paths for verification (project-specific headers)
 # extra_includes:
