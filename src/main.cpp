@@ -34,7 +34,7 @@ static llvm::cl::opt<std::string>
 
 static llvm::cl::opt<std::string>
     PytorchRoot("pytorch-root",
-                llvm::cl::desc("Path to PyTorch source/install root (required for compile-based verification)"),
+                llvm::cl::desc("Path to PyTorch root, or \"auto\" to detect from pip-installed torch"),
                 llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::list<std::string>
@@ -314,9 +314,11 @@ static int runWithConfig(stable_abi::Config &cfg,
     }
     clang::tooling::ClangTool Tool(*db, sources);
 
+    auto pytorchIncs = stable_abi::pytorchIncludePaths(cfg.pytorch_root);
     Tool.appendArgumentsAdjuster(
-        [&resourceDir](const clang::tooling::CommandLineArguments &Args,
-                        llvm::StringRef Filename) {
+        [&resourceDir, &pytorchIncs](
+            const clang::tooling::CommandLineArguments &Args,
+            llvm::StringRef Filename) {
             clang::tooling::CommandLineArguments AdjustedArgs = Args;
             if (Filename.ends_with(".cu") || Filename.ends_with(".cuh")) {
                 AdjustedArgs.push_back("--cuda-host-only");
@@ -325,6 +327,8 @@ static int runWithConfig(stable_abi::Config &cfg,
                 AdjustedArgs.push_back("-resource-dir");
                 AdjustedArgs.push_back(resourceDir);
             }
+            for (const auto &inc : pytorchIncs)
+                AdjustedArgs.push_back("-I" + inc);
             return AdjustedArgs;
         });
 
@@ -407,6 +411,11 @@ int main(int argc, const char **argv) {
     if (configResult == ConfigResult::Loaded) {
         if (!applyCliOverrides(cfg))
             return 1;
+        std::string resolveErr;
+        if (!stable_abi::resolvePytorchRoot(cfg, resolveErr)) {
+            llvm::errs() << "error: " << resolveErr << "\n";
+            return 1;
+        }
         auto &cliSources = OptionsParser.getSourcePathList();
         if (!cliSources.empty())
             cfg.sources = cliSources;
@@ -436,6 +445,11 @@ int main(int argc, const char **argv) {
 
     if (!applyCliOverrides(cfg))
         return 1;
+    std::string resolveErr;
+    if (!stable_abi::resolvePytorchRoot(cfg, resolveErr)) {
+        llvm::errs() << "error: " << resolveErr << "\n";
+        return 1;
+    }
     cfg.sources = cliSources;
     return runWithConfig(cfg, &OptionsParser.getCompilations());
 }

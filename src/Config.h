@@ -26,6 +26,9 @@ struct Config {
 [[nodiscard]] bool loadConfig(const std::string &path, Config &out, std::string &error);
 void printExampleConfig();
 
+std::vector<std::string> pytorchIncludePaths(const std::string &root);
+bool resolvePytorchRoot(Config &cfg, std::string &error);
+
 } // namespace stable_abi
 
 namespace llvm {
