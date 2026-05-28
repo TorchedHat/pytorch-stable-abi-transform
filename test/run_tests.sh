@@ -333,12 +333,12 @@ MACRO_INPUT="$WORK_DIR/macro_body_test.cpp"
 cat > "$MACRO_INPUT" << 'MACROEOF'
 #include <torch/all.h>
 
-#define CHECK_CPU(x) TORCH_CHECK(x.device().type() == at::kCPU, #x " must be CPU")
+#define MY_TENSOR at::Tensor
 #define GET_PTR(x) ((x).data_ptr<float>())
 #define CLONE_IT(x) ((x).clone())
 
 void foo(torch::Tensor& t) {
-    CHECK_CPU(t);
+    MY_TENSOR a;
     float* p = GET_PTR(t);
     auto c = CLONE_IT(t);
 }
@@ -350,18 +350,18 @@ import json, sys
 d = json.load(sys.stdin)
 mb = [f for f in d['findings'] if f['flag'] and 'macro body' in f['new']]
 kinds = {f['kind'] for f in mb}
-required = {'DPTR', 'M2F'}
+required = {'TYPE', 'DPTR', 'M2F'}
 missing = required - kinds
 if missing:
     print(f'FAIL missing kinds: {missing}')
-elif len(mb) < 2:
-    print(f'FAIL only {len(mb)} flags, expected >= 2')
+elif len(mb) < 3:
+    print(f'FAIL only {len(mb)} flags, expected >= 3')
 else:
     print(f'PASS {len(mb)}')
 ")
 if echo "$macro_result" | grep -q "^PASS"; then
     count=$(echo "$macro_result" | grep -oP '\d+')
-    echo "PASS  macro-body-detection: $count flags across DPTR, M2F"
+    echo "PASS  macro-body-detection: $count flags across TYPE, DPTR, M2F"
     macro_passed=$((macro_passed + 1))
 else
     echo "FAIL  macro-body-detection: $macro_result"

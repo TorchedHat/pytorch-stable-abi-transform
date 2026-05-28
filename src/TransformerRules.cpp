@@ -218,6 +218,23 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
         auto text = getSourceText(TL->getSourceRange(), SM,
                                   R.Context->getLangOpts());
 
+        if (cl.kind == LocClass::MacroBody) {
+            auto qualName = TL->getType().getUnqualifiedType()
+                .getDesugaredType(*R.Context)
+                .getAsString(R.Context->getPrintingPolicy());
+            for (const auto &rule : kTypeRules) {
+                if (qualName.find(rule.from) != std::string::npos) {
+                    std::string_view suggestion = rule.to.empty()
+                        ? "decompose into explicit scalar_type, layout, device args"
+                        : rule.to;
+                    flagIfMacroBody(cl, SM, rep, FindingKind::Type,
+                                    rule.from, suggestion);
+                    return noEdits();
+                }
+            }
+            return noEdits();
+        }
+
         for (const auto &rule : kTypeRules) {
             auto pos = findTypeRuleMatch(text, rule);
             if (pos == std::string::npos)
@@ -227,10 +244,6 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
             std::string_view suggestion = flag_only
                 ? "decompose into explicit scalar_type, layout, device args"
                 : rule.to;
-
-            if (flagIfMacroBody(cl, SM, rep, FindingKind::Type,
-                                rule.from, suggestion))
-                return noEdits();
 
             rep.addFinding(FindingKind::Type, SM, TL->getBeginLoc(),
                            rule.from, suggestion,
