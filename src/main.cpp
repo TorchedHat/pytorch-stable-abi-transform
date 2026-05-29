@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "DepGraph.h"
 #include "StableAbiAction.h"
 #include "Verifier.h"
 #include <array>
@@ -8,6 +9,11 @@
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
+#include <llvm/Support/ThreadPool.h>
+#include <llvm/Support/Threading.h>
+#include <atomic>
+#include <chrono>
+#include <mutex>
 #include <optional>
 #include <string_view>
 
@@ -24,7 +30,7 @@ static llvm::cl::OptionCategory
 
 static llvm::cl::opt<std::string>
     ModeOpt("mode",
-            llvm::cl::desc("Operating mode: audit (default), rewrite, or verify"),
+            llvm::cl::desc("Operating mode: audit (default), rewrite, verify, or plan"),
             llvm::cl::init("audit"), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
@@ -59,6 +65,11 @@ static llvm::cl::opt<std::string>
                 llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
+    OutputDir("output-dir",
+              llvm::cl::desc("Write transformed files to this directory instead of in-place"),
+              llvm::cl::init(""), llvm::cl::cat(ToolCategory));
+
+static llvm::cl::opt<std::string>
     ConfigFile("config",
                llvm::cl::desc("Path to YAML config file (.stable-abi.yaml)"),
                llvm::cl::init(""), llvm::cl::cat(ToolCategory));
@@ -72,6 +83,10 @@ static llvm::cl::opt<bool>
     DryRun("dry-run",
            llvm::cl::desc("Show unified diff of what --mode=rewrite would change, without modifying files"),
            llvm::cl::init(false), llvm::cl::cat(ToolCategory));
+
+static llvm::cl::opt<unsigned>
+    Jobs("jobs", llvm::cl::desc("Number of parallel TU processing threads (0 = auto, 1 = sequential)"),
+         llvm::cl::init(0), llvm::cl::cat(ToolCategory));
 
 static std::string detectResourceDir() {
     llvm::SmallString<256> path(LLVM_INSTALL_PREFIX);
@@ -97,6 +112,7 @@ static std::optional<Mode> parseMode(llvm::StringRef s) {
     if (s == "audit") return Mode::Audit;
     if (s == "rewrite") return Mode::Rewrite;
     if (s == "verify") return Mode::Verify;
+    if (s == "plan") return Mode::Plan;
     return std::nullopt;
 }
 
@@ -182,6 +198,24 @@ static std::vector<std::string> discoverSources(llvm::StringRef root) {
     return result;
 }
 
+static std::vector<std::string> expandSources(
+    const std::vector<std::string> &entries) {
+    std::set<std::string> seen;
+    std::vector<std::string> result;
+    for (const auto &entry : entries) {
+        if (llvm::sys::fs::is_directory(entry)) {
+            for (auto &f : discoverSources(entry)) {
+                if (seen.insert(f).second)
+                    result.push_back(std::move(f));
+            }
+        } else {
+            if (seen.insert(entry).second)
+                result.push_back(entry);
+        }
+    }
+    return result;
+}
+
 enum class ConfigResult { NotFound, Loaded, Error };
 
 static ConfigResult tryLoadConfig(stable_abi::Config &cfg, std::string &error) {
@@ -204,7 +238,7 @@ static bool applyCliOverrides(stable_abi::Config &cfg) {
         auto m = parseMode(ModeOpt.getValue());
         if (!m) {
             llvm::errs() << "error: invalid mode '" << ModeOpt.getValue()
-                         << "'. Must be one of: audit, rewrite, verify\n";
+                         << "'. Must be one of: audit, rewrite, verify, plan\n";
             return false;
         }
         cfg.mode = *m;
@@ -237,6 +271,10 @@ static bool applyCliOverrides(stable_abi::Config &cfg) {
     if (ExtraIncludes.getNumOccurrences() > 0)
         cfg.extra_includes = std::vector<std::string>(
             ExtraIncludes.begin(), ExtraIncludes.end());
+    if (OutputDir.getNumOccurrences() > 0)
+        cfg.output_dir = OutputDir.getValue();
+    if (Jobs.getNumOccurrences() > 0)
+        cfg.jobs = Jobs.getValue();
     return true;
 }
 
@@ -264,7 +302,7 @@ static int runWithConfig(stable_abi::Config &cfg,
         projectRoot = std::string(abs);
     }
 
-    std::vector<std::string> sources = cfg.sources;
+    std::vector<std::string> sources = expandSources(cfg.sources);
     if (sources.empty() && !projectRoot.empty()) {
         if (!llvm::sys::fs::is_directory(projectRoot)) {
             llvm::errs() << "error: project root is not a directory: "
@@ -295,6 +333,11 @@ static int runWithConfig(stable_abi::Config &cfg,
                          cfg.verify_method, cfg.format);
     }
 
+    if (cfg.mode == Mode::Plan && projectRoot.empty()) {
+        llvm::errs() << "error: --project-root required for plan mode\n";
+        return 1;
+    }
+
     auto writeMode = (cfg.mode == Mode::Rewrite)
         ? (DryRun.getValue() ? stable_abi::WriteMode::DryRun
                              : stable_abi::WriteMode::Rewrite)
@@ -312,16 +355,37 @@ static int runWithConfig(stable_abi::Config &cfg,
             ".", clangArgs);
         db = ownedDB.get();
     }
-    clang::tooling::ClangTool Tool(*db, sources);
+    std::string outputDir = cfg.output_dir;
+    if (!outputDir.empty()) {
+        if (projectRoot.empty()) {
+            llvm::errs() << "error: --output-dir requires --project-root "
+                            "(needed to compute relative paths)\n";
+            return 1;
+        }
+        llvm::SmallString<256> abs(outputDir);
+        llvm::sys::fs::make_absolute(abs);
+        outputDir = std::string(abs);
+    }
 
     auto pytorchIncs = stable_abi::pytorchIncludePaths(cfg.pytorch_root);
-    Tool.appendArgumentsAdjuster(
+    auto argsAdjuster =
         [&resourceDir, &pytorchIncs](
             const clang::tooling::CommandLineArguments &Args,
             llvm::StringRef Filename) {
             clang::tooling::CommandLineArguments AdjustedArgs = Args;
-            if (Filename.ends_with(".cu") || Filename.ends_with(".cuh")) {
+            if (Filename.ends_with(".cu"))
                 AdjustedArgs.push_back("--cuda-host-only");
+            if (Filename.ends_with(".cuh")) {
+                // .cuh triggers Clang's CUDA driver which creates
+                // device+host compilation pairs and fails with
+                // "expected exactly one compiler job". Force C++
+                // since we only analyze host-side API usage.
+                auto it = std::find(AdjustedArgs.begin(), AdjustedArgs.end(),
+                                    Filename.str());
+                if (it != AdjustedArgs.end())
+                    AdjustedArgs.insert(it, "-xc++");
+                else
+                    AdjustedArgs.push_back("-xc++");
             }
             if (!resourceDir.empty()) {
                 AdjustedArgs.push_back("-resource-dir");
@@ -330,21 +394,78 @@ static int runWithConfig(stable_abi::Config &cfg,
             for (const auto &inc : pytorchIncs)
                 AdjustedArgs.push_back("-I" + inc);
             return AdjustedArgs;
-        });
+        };
+
+    stable_abi::IncludeGraph includeGraph;
+    std::mutex includeGraphMutex;
+    std::mutex writeMutex;
+
+    unsigned jobs = cfg.jobs;
+    if (jobs == 0)
+        jobs = llvm::hardware_concurrency().compute_thread_count();
+    bool generates_edits = (writeMode != stable_abi::WriteMode::Audit);
+    bool parallel = jobs > 1 && sources.size() > 1 && !generates_edits;
+    if (jobs > 1 && generates_edits) {
+        llvm::errs() << "note: --jobs ignored in rewrite mode "
+                        "(parallel rewrite is not yet safe)\n";
+    }
 
     stable_abi::ActionOptions actionOpts{
         .write_mode = writeMode,
         .project_root = projectRoot,
+        .output_dir = outputDir,
+        .include_graph = (cfg.mode == Mode::Plan) ? &includeGraph : nullptr,
+        .include_graph_mutex = parallel ? &includeGraphMutex : nullptr,
+        .write_mutex = parallel ? &writeMutex : nullptr,
     };
     auto Factory = std::make_unique<stable_abi::StableAbiActionFactory>(
         actionOpts);
 
-    stable_abi::ParseDiagConsumer diagConsumer(Factory->getReporter());
-    Tool.setDiagnosticConsumer(&diagConsumer);
+    int result;
+    if (parallel) {
+        llvm::DefaultThreadPool pool(
+            llvm::hardware_concurrency(jobs));
+        std::atomic<int> toolResult{0};
 
-    int result = Tool.run(Factory.get());
+        llvm::errs() << "note: processing " << sources.size()
+                     << " files with " << jobs << " threads\n";
+        auto t0 = std::chrono::steady_clock::now();
+
+        for (const auto &source : sources) {
+            pool.async([&, source]() {
+                clang::tooling::ClangTool tool(*db, {source});
+                tool.appendArgumentsAdjuster(argsAdjuster);
+                stable_abi::ParseDiagConsumer diag(Factory->getReporter());
+                tool.setDiagnosticConsumer(&diag);
+                int r = tool.run(Factory.get());
+                if (r != 0)
+                    toolResult.store(1, std::memory_order_relaxed);
+            });
+        }
+        pool.wait();
+        auto elapsed = std::chrono::steady_clock::now() - t0;
+        auto secs = std::chrono::duration<double>(elapsed).count();
+        llvm::errs() << llvm::format("note: processed %zu files in %.1fs\n",
+                                     sources.size(), secs);
+        result = toolResult.load();
+    } else {
+        clang::tooling::ClangTool Tool(*db, sources);
+        Tool.appendArgumentsAdjuster(argsAdjuster);
+        stable_abi::ParseDiagConsumer diagConsumer(Factory->getReporter());
+        Tool.setDiagnosticConsumer(&diagConsumer);
+        result = Tool.run(Factory.get());
+    }
 
     auto &reporter = Factory->getReporter();
+
+    if (cfg.mode == Mode::Plan) {
+        stable_abi::DepGraph graph;
+        graph.build(includeGraph, reporter.findingsByFile());
+        auto plan = graph.computePlan();
+        stable_abi::printMigrationPlan(plan, json);
+        return 0;
+    }
+
     reporter.suppressRedundantFlags();
     if (json) {
         reporter.printJson();
@@ -357,7 +478,19 @@ static int runWithConfig(stable_abi::Config &cfg,
     if (writeMode == stable_abi::WriteMode::Rewrite && result == 0) {
         if (!json)
             llvm::outs() << "\n--- Post-rewrite ABI verification ---\n";
-        int verify_result = runVerify(sources, resourceDir, cfg.pytorch_root,
+        std::vector<std::string> verifySources = sources;
+        if (!outputDir.empty()) {
+            verifySources.clear();
+            for (const auto &src : sources) {
+                llvm::SmallString<256> rel(src);
+                llvm::sys::path::replace_path_prefix(rel, projectRoot, "");
+                llvm::SmallString<256> out(outputDir);
+                llvm::sys::path::append(out, rel);
+                if (llvm::sys::fs::exists(out))
+                    verifySources.push_back(std::string(out));
+            }
+        }
+        int verify_result = runVerify(verifySources, resourceDir, cfg.pytorch_root,
                                       cfg.extra_includes, cfg.cuda_include,
                                       cfg.verify_method, cfg.format, true);
         if (verify_result > 0) {

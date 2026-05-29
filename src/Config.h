@@ -6,7 +6,7 @@
 
 namespace stable_abi {
 
-enum class Mode { Audit, Rewrite, Verify };
+enum class Mode { Audit, Rewrite, Verify, Plan };
 enum class OutputFormat { Text, Json };
 enum class VerifyMethod { Compile, Regex };
 
@@ -21,6 +21,8 @@ struct Config {
     std::vector<std::string> sources;
     VerifyMethod verify_method = VerifyMethod::Compile;
     std::string cuda_include;
+    std::string output_dir;
+    unsigned jobs = 0;
 };
 
 [[nodiscard]] bool loadConfig(const std::string &path, Config &out, std::string &error);
@@ -39,6 +41,7 @@ template <> struct ScalarEnumerationTraits<stable_abi::Mode> {
         io.enumCase(val, "audit", stable_abi::Mode::Audit);
         io.enumCase(val, "rewrite", stable_abi::Mode::Rewrite);
         io.enumCase(val, "verify", stable_abi::Mode::Verify);
+        io.enumCase(val, "plan", stable_abi::Mode::Plan);
     }
 };
 
@@ -68,6 +71,8 @@ template <> struct MappingTraits<stable_abi::Config> {
         io.mapOptional("sources", c.sources);
         io.mapOptional("verify_method", c.verify_method);
         io.mapOptional("cuda_include", c.cuda_include);
+        io.mapOptional("output_dir", c.output_dir);
+        io.mapOptional("jobs", c.jobs);
     }
 };
 

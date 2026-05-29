@@ -7,10 +7,12 @@
 #include <clang/Tooling/Core/Replacement.h>
 #include <llvm/ADT/StringRef.h>
 #include <map>
+#include <set>
 #include <string>
 
 namespace stable_abi {
 
+using IncludeGraph = std::map<std::string, std::set<std::string>>;
 using FileReplacements = std::map<std::string, clang::tooling::Replacements>;
 
 inline std::string getSourceText(clang::SourceRange range,

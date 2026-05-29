@@ -5,6 +5,7 @@
 #include <clang/Lex/Lexer.h>
 #include <clang/Lex/MacroArgs.h>
 #include <clang/Lex/MacroInfo.h>
+#include <llvm/Support/Path.h>
 
 namespace stable_abi {
 
@@ -15,6 +16,23 @@ void PreprocessorCallbacks::InclusionDirective(
     llvm::StringRef SearchPath, llvm::StringRef RelativePath,
     const clang::Module *SuggestedModule, bool ModuleImported,
     clang::SrcMgr::CharacteristicKind FileType) {
+
+    if (include_graph_ && File && !project_root_.empty()) {
+        auto includingFile = SM_.getFilename(SM_.getSpellingLoc(HashLoc));
+        auto includedFile = File->getName();
+        if (!includedFile.empty() &&
+            isInProjectScope(SM_, HashLoc, project_root_) &&
+            includedFile.starts_with(project_root_)) {
+            if (include_graph_mutex_) {
+                std::lock_guard<std::mutex> lock(*include_graph_mutex_);
+                (*include_graph_)[std::string(includingFile)]
+                    .insert(std::string(includedFile));
+            } else {
+                (*include_graph_)[std::string(includingFile)]
+                    .insert(std::string(includedFile));
+            }
+        }
+    }
 
     if (!isInProjectScope(SM_, HashLoc, project_root_))
         return;

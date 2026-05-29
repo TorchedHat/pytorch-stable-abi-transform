@@ -4,6 +4,7 @@
 #include "Reporter.h"
 #include "Rules.h"
 #include <clang/Lex/PPCallbacks.h>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -16,10 +17,14 @@ public:
                           Reporter &reporter, clang::SourceManager &SM,
                           const clang::LangOptions &langOpts,
                           bool rewrite_mode,
-                          const std::string &projectRoot = "")
+                          const std::string &projectRoot = "",
+                          IncludeGraph *includeGraph = nullptr,
+                          std::mutex *includeGraphMutex = nullptr)
         : file_repls_(fileRepls), reporter_(reporter), SM_(SM),
           lang_opts_(langOpts),
-          rewrite_mode_(rewrite_mode), project_root_(projectRoot) {}
+          rewrite_mode_(rewrite_mode), project_root_(projectRoot),
+          include_graph_(includeGraph),
+          include_graph_mutex_(includeGraphMutex) {}
 
     void InclusionDirective(clang::SourceLocation HashLoc,
                             const clang::Token &IncludeTok,
@@ -56,6 +61,8 @@ private:
     std::string project_root_;
     std::set<std::string> emitted_includes_;
     std::vector<PendingInclude> pending_includes_;
+    IncludeGraph *include_graph_ = nullptr;
+    std::mutex *include_graph_mutex_ = nullptr;
 };
 
 } // namespace stable_abi

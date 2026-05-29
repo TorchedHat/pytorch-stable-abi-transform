@@ -2,6 +2,8 @@
 #include "TransformerRules.h"
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Tooling/Core/Replacement.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
 #include <sstream>
 
@@ -54,7 +56,8 @@ StableAbiFrontendAction::CreateASTConsumer(clang::CompilerInstance &CI,
 
     auto ppCallbacks = std::make_unique<PreprocessorCallbacks>(
         file_repls_, reporter_, CI.getSourceManager(), CI.getLangOpts(),
-        opts_.generates_edits(), opts_.project_root);
+        opts_.generates_edits(), opts_.project_root, opts_.include_graph,
+        opts_.include_graph_mutex);
     auto *ppRaw = ppCallbacks.get();
     CI.getPreprocessor().addPPCallbacks(std::move(ppCallbacks));
 
@@ -151,6 +154,9 @@ void StableAbiFrontendAction::EndSourceFileAction() {
                 llvm::errs() << "warning: failed to apply replacements to "
                              << filename << "\n";
         }
+        std::unique_lock<std::mutex> writeLock;
+        if (opts_.write_mutex)
+            writeLock = std::unique_lock<std::mutex>(*opts_.write_mutex);
         if (opts_.write_mode == WriteMode::DryRun) {
             auto &SM = rewriter_.getSourceMgr();
             for (auto it = rewriter_.buffer_begin();
@@ -170,8 +176,34 @@ void StableAbiFrontendAction::EndSourceFileAction() {
                 if (original != modified)
                     printUnifiedDiff(filename, original, modified);
             }
-        } else {
+        } else if (opts_.output_dir.empty()) {
             rewriter_.overwriteChangedFiles();
+        } else {
+            auto &SM = rewriter_.getSourceMgr();
+            for (auto it = rewriter_.buffer_begin();
+                 it != rewriter_.buffer_end(); ++it) {
+                auto optRef = SM.getFileEntryRefForID(it->first);
+                if (!optRef) continue;
+                llvm::StringRef srcPath = optRef->getName();
+
+                llvm::SmallString<256> relPath(srcPath);
+                llvm::sys::path::replace_path_prefix(
+                    relPath, opts_.project_root, "");
+
+                llvm::SmallString<256> outPath(opts_.output_dir);
+                llvm::sys::path::append(outPath, relPath);
+                llvm::sys::fs::create_directories(
+                    llvm::sys::path::parent_path(outPath));
+
+                std::error_code ec;
+                llvm::raw_fd_ostream out(outPath, ec);
+                if (ec) {
+                    llvm::errs() << "error writing " << outPath << ": "
+                                 << ec.message() << "\n";
+                    continue;
+                }
+                it->second.write(out);
+            }
         }
         file_repls_.clear();
     }

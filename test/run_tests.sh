@@ -149,6 +149,286 @@ echo ""
 echo "Exit code tests: $exitcode_passed passed, $exitcode_failed failed"
 [ "$exitcode_failed" -gt 0 ] && exit 1
 
+# Feature tests: directory sources, output-dir, plan mode
+echo ""
+echo "--- Feature tests ---"
+feat_passed=0
+feat_failed=0
+
+# 1. Directory source expansion: --project-root auto-discovers files
+if "$TOOL" --mode=audit --project-root="$INPUTS" "${COMMON_ARGS[@]}" > /dev/null 2>&1; then
+    echo "FAIL  dir-discovery: expected exit 1 (unstable inputs), got 0"
+    feat_failed=$((feat_failed + 1))
+else
+    echo "PASS  dir-discovery: auto-discovers sources under --project-root"
+    feat_passed=$((feat_passed + 1))
+fi
+
+# 2. Output-dir: out-of-place rewrite preserves originals
+OUTDIR_WORK="$(mktemp -d)"
+cp "$INPUTS/smoke.cpp" "$OUTDIR_WORK/smoke.cpp"
+cp_md5=$(md5sum "$OUTDIR_WORK/smoke.cpp" | cut -d' ' -f1)
+if "$TOOL" --mode=rewrite --project-root="$OUTDIR_WORK" \
+    --output-dir="$OUTDIR_WORK/out" "$OUTDIR_WORK/smoke.cpp" \
+    "${COMMON_ARGS[@]}" > /dev/null 2>"$OUTDIR_WORK/stderr"; then
+    after_md5=$(md5sum "$OUTDIR_WORK/smoke.cpp" | cut -d' ' -f1)
+    if [ "$cp_md5" != "$after_md5" ]; then
+        echo "FAIL  output-dir-rewrite: original file was modified"
+        feat_failed=$((feat_failed + 1))
+    elif [ ! -f "$OUTDIR_WORK/out/smoke.cpp" ]; then
+        echo "FAIL  output-dir-rewrite: output file not created"
+        feat_failed=$((feat_failed + 1))
+    elif diff -q "$EXPECTED/smoke.cpp" "$OUTDIR_WORK/out/smoke.cpp" > /dev/null 2>&1; then
+        echo "PASS  output-dir-rewrite: original preserved, output matches expected"
+        feat_passed=$((feat_passed + 1))
+    else
+        echo "FAIL  output-dir-rewrite: output differs from expected"
+        diff -u "$EXPECTED/smoke.cpp" "$OUTDIR_WORK/out/smoke.cpp" | head -20
+        feat_failed=$((feat_failed + 1))
+    fi
+else
+    echo "FAIL  output-dir-rewrite: tool returned non-zero"
+    cat "$OUTDIR_WORK/stderr"
+    feat_failed=$((feat_failed + 1))
+fi
+rm -rf "$OUTDIR_WORK"
+
+# 3. Output-dir without --project-root should error
+if "$TOOL" --mode=rewrite --output-dir=/tmp/out "$INPUTS/smoke.cpp" \
+    "${COMMON_ARGS[@]}" > /dev/null 2>"$WORK_DIR/outdir_err.stderr"; then
+    echo "FAIL  output-dir-no-root: expected exit 1, got 0"
+    feat_failed=$((feat_failed + 1))
+elif grep -q "requires --project-root" "$WORK_DIR/outdir_err.stderr"; then
+    echo "PASS  output-dir-no-root: requires --project-root"
+    feat_passed=$((feat_passed + 1))
+else
+    echo "FAIL  output-dir-no-root: error message unclear"
+    cat "$WORK_DIR/outdir_err.stderr"
+    feat_failed=$((feat_failed + 1))
+fi
+
+# 4. Plan mode: single file, valid JSON with expected structure
+plan_out="$WORK_DIR/plan.json"
+if "$TOOL" --mode=plan --format=json --project-root="$INPUTS" \
+    "$INPUTS/smoke.cpp" "${COMMON_ARGS[@]}" > "$plan_out" 2>/dev/null; then
+    if python3 -m json.tool "$plan_out" > /dev/null 2>&1 &&
+       python3 -c "
+import json, sys
+d = json.load(open('$plan_out'))
+assert d['fully_parallel'] == True
+assert len(d['groups']) == 1
+assert d['groups'][0]['findings'] > 0
+assert 'sources' in d['groups'][0]
+assert 'headers' in d['groups'][0]
+" 2>/dev/null; then
+        echo "PASS  plan-json: valid JSON, 1 group, fully_parallel"
+        feat_passed=$((feat_passed + 1))
+    else
+        echo "FAIL  plan-json: JSON structure invalid"
+        cat "$plan_out"
+        feat_failed=$((feat_failed + 1))
+    fi
+else
+    echo "FAIL  plan-json: tool returned non-zero"
+    feat_failed=$((feat_failed + 1))
+fi
+
+# 5. Plan mode: two unrelated files produce two independent groups
+plan_multi="$WORK_DIR/plan_multi.json"
+if "$TOOL" --mode=plan --format=json --project-root="$INPUTS" \
+    "$INPUTS/smoke.cpp" "$INPUTS/types.cpp" "${COMMON_ARGS[@]}" \
+    > "$plan_multi" 2>/dev/null; then
+    if python3 -c "
+import json, sys
+d = json.load(open('$plan_multi'))
+assert d['fully_parallel'] == True
+assert len(d['groups']) == 2
+" 2>/dev/null; then
+        echo "PASS  plan-multi-group: 2 independent groups"
+        feat_passed=$((feat_passed + 1))
+    else
+        echo "FAIL  plan-multi-group: expected 2 groups with fully_parallel"
+        cat "$plan_multi"
+        feat_failed=$((feat_failed + 1))
+    fi
+else
+    echo "FAIL  plan-multi-group: tool returned non-zero"
+    feat_failed=$((feat_failed + 1))
+fi
+
+# 6. Plan mode without --project-root should error
+if "$TOOL" --mode=plan "$INPUTS/smoke.cpp" "${COMMON_ARGS[@]}" \
+    > /dev/null 2>"$WORK_DIR/plan_err.stderr"; then
+    echo "FAIL  plan-no-root: expected exit 1, got 0"
+    feat_failed=$((feat_failed + 1))
+elif grep -q "project-root required" "$WORK_DIR/plan_err.stderr"; then
+    echo "PASS  plan-no-root: requires --project-root"
+    feat_passed=$((feat_passed + 1))
+else
+    echo "FAIL  plan-no-root: error message unclear"
+    cat "$WORK_DIR/plan_err.stderr"
+    feat_failed=$((feat_failed + 1))
+fi
+
+# 7. Plan mode: text output format
+plan_text="$WORK_DIR/plan_text.out"
+if "$TOOL" --mode=plan --project-root="$INPUTS" "$INPUTS/smoke.cpp" \
+    "${COMMON_ARGS[@]}" > "$plan_text" 2>/dev/null; then
+    if grep -q "Migration plan:" "$plan_text" && grep -q "Group A" "$plan_text"; then
+        echo "PASS  plan-text: text output has expected structure"
+        feat_passed=$((feat_passed + 1))
+    else
+        echo "FAIL  plan-text: missing expected text"
+        cat "$plan_text"
+        feat_failed=$((feat_failed + 1))
+    fi
+else
+    echo "FAIL  plan-text: tool returned non-zero"
+    feat_failed=$((feat_failed + 1))
+fi
+
+echo ""
+echo "Feature tests: $feat_passed passed, $feat_failed failed"
+[ "$feat_failed" -gt 0 ] && exit 1
+
+# Parallel determinism: --jobs=2 must produce identical findings to --jobs=1
+echo ""
+echo "--- Parallel determinism test ---"
+par_passed=0
+par_failed=0
+
+seq_out="$WORK_DIR/seq_audit.json"
+par_out="$WORK_DIR/par_audit.json"
+"$TOOL" --mode=audit --format=json --jobs=1 \
+    "$INPUTS/smoke.cpp" "$INPUTS/types.cpp" "${COMMON_ARGS[@]}" \
+    > "$seq_out" 2>/dev/null || true
+"$TOOL" --mode=audit --format=json --jobs=2 \
+    "$INPUTS/smoke.cpp" "$INPUTS/types.cpp" "${COMMON_ARGS[@]}" \
+    > "$par_out" 2>/dev/null || true
+
+seq_rewrites=$(python3 -c "import json; print(json.load(open('$seq_out'))['rewrites'])")
+par_rewrites=$(python3 -c "import json; print(json.load(open('$par_out'))['rewrites'])")
+seq_flags=$(python3 -c "import json; print(json.load(open('$seq_out'))['flags'])")
+par_flags=$(python3 -c "import json; print(json.load(open('$par_out'))['flags'])")
+
+if [ "$seq_rewrites" = "$par_rewrites" ] && [ "$seq_flags" = "$par_flags" ]; then
+    echo "PASS  parallel-determinism: jobs=1 ($seq_rewrites rewrites, $seq_flags flags) == jobs=2 ($par_rewrites rewrites, $par_flags flags)"
+    par_passed=$((par_passed + 1))
+else
+    echo "FAIL  parallel-determinism: jobs=1 ($seq_rewrites/$seq_flags) != jobs=2 ($par_rewrites/$par_flags)"
+    par_failed=$((par_failed + 1))
+fi
+
+echo ""
+echo "Parallel tests: $par_passed passed, $par_failed failed"
+[ "$par_failed" -gt 0 ] && exit 1
+
+# Macro body detection: unstable API inside #define must be flagged, not silently dropped
+echo ""
+echo "--- Macro body detection test ---"
+macro_passed=0
+macro_failed=0
+
+MACRO_INPUT="$WORK_DIR/macro_body_test.cpp"
+cat > "$MACRO_INPUT" << 'MACROEOF'
+#include <torch/all.h>
+
+#define MY_TENSOR at::Tensor
+#define GET_PTR(x) ((x).data_ptr<float>())
+#define CLONE_IT(x) ((x).clone())
+
+void foo(torch::Tensor& t) {
+    MY_TENSOR a;
+    float* p = GET_PTR(t);
+    auto c = CLONE_IT(t);
+}
+MACROEOF
+
+macro_out=$("$TOOL" --mode=audit --format=json "$MACRO_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+macro_result=$(echo "$macro_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+mb = [f for f in d['findings'] if f['flag'] and 'macro body' in f['new']]
+kinds = {f['kind'] for f in mb}
+required = {'TYPE', 'DPTR', 'M2F'}
+missing = required - kinds
+if missing:
+    print(f'FAIL missing kinds: {missing}')
+elif len(mb) < 3:
+    print(f'FAIL only {len(mb)} flags, expected >= 3')
+else:
+    print(f'PASS {len(mb)}')
+")
+if echo "$macro_result" | grep -q "^PASS"; then
+    count=$(echo "$macro_result" | grep -oP '\d+')
+    echo "PASS  macro-body-detection: $count flags across TYPE, DPTR, M2F"
+    macro_passed=$((macro_passed + 1))
+else
+    echo "FAIL  macro-body-detection: $macro_result"
+    echo "$macro_out"
+    macro_failed=$((macro_failed + 1))
+fi
+
+echo ""
+echo "Macro body tests: $macro_passed passed, $macro_failed failed"
+[ "$macro_failed" -gt 0 ] && exit 1
+
+# Completeness tests: every rule category fires, catch-all works
+echo ""
+echo "--- Completeness tests ---"
+comp_passed=0
+comp_failed=0
+
+# 1. Every finding kind must appear when auditing completeness.cpp
+comp_out=$("$TOOL" --mode=audit --format=json "$INPUTS/completeness.cpp" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+comp_result=$(echo "$comp_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+kinds = {f['kind'] for f in d['findings']}
+required = {'TYPE', 'STYPE', 'DPTR', 'M2F', 'FUNC', 'MACRO', 'INCL'}
+missing = required - kinds
+if missing:
+    print(f'FAIL missing: {missing}')
+else:
+    print(f'PASS {len(d[\"findings\"])} findings, all {len(required)} kinds covered')
+")
+if echo "$comp_result" | grep -q "^PASS"; then
+    echo "PASS  rule-coverage: $comp_result"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  rule-coverage: $comp_result"
+    comp_failed=$((comp_failed + 1))
+fi
+
+# 2. Catch-all: unknown unstable APIs must be flagged
+CATCHALL_INPUT="$WORK_DIR/catchall_test.cpp"
+cat > "$CATCHALL_INPUT" << 'CATCHALLEOF'
+#include <torch/all.h>
+
+void foo() {
+    auto a = at::randn({3});
+    auto b = at::ones({3});
+}
+CATCHALLEOF
+
+catchall_out=$("$TOOL" --mode=audit --format=json "$CATCHALL_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+catchall_flags=$(echo "$catchall_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(sum(1 for f in d['findings'] if f['kind'] == 'FLAG'))
+")
+if [ "$catchall_flags" -ge 2 ]; then
+    echo "PASS  catch-all: $catchall_flags unknown unstable APIs flagged"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  catch-all: expected >= 2 flags, got $catchall_flags"
+    comp_failed=$((comp_failed + 1))
+fi
+
+echo ""
+echo "Completeness tests: $comp_passed passed, $comp_failed failed"
+[ "$comp_failed" -gt 0 ] && exit 1
+
 # Compile-based verification: stricter check, may expose issues regex misses
 echo ""
 echo "--- Compile-based verification tests ---"

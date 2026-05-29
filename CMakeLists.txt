@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(stable-abi-transform VERSION 0.1.0 LANGUAGES C CXX)
+project(stable-abi-transform VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,6 +69,7 @@ add_executable(stable-abi-transform
     src/TransformerRules.cpp
     src/Reporter.cpp
     src/Verifier.cpp
+    src/DepGraph.cpp
 )
 
 target_include_directories(stable-abi-transform PRIVATE ${LLVM_INCLUDE_DIR})

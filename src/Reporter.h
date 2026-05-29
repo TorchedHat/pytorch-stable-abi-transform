@@ -3,6 +3,7 @@
 #include <clang/Basic/SourceLocation.h>
 #include <clang/Basic/SourceManager.h>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <tuple>
@@ -58,6 +59,9 @@ public:
 
     [[nodiscard]] bool hasNonIncludeFindingsForFile(std::string_view filename) const;
 
+    [[nodiscard]] std::map<std::string, std::vector<Finding>> findingsByFile() const;
+    [[nodiscard]] const std::vector<Finding> &findings() const { return findings_; }
+
     void recordParseError(const std::string &file);
     [[nodiscard]] size_t parseErrorCount() const { return parse_error_count_; }
     void printParseWarnings() const;
@@ -69,6 +73,11 @@ private:
     size_t flag_count_ = 0;
     size_t parse_error_count_ = 0;
     std::map<std::string, size_t> parse_errors_by_file_;
+    mutable std::mutex mutex_;
+
+    void addFindingLocked(FindingKind kind, std::string_view file, unsigned line,
+                          unsigned col, std::string_view old_text,
+                          std::string_view new_text, FindingAction action);
 
     static std::string_view kindLabel(FindingKind kind);
 };

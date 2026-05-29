@@ -109,19 +109,37 @@ hasAnyNameFromVec(std::vector<std::string> names) {
 }
 
 enum class MacroPolicy { RejectAll, AllowArgs };
+enum class LocClass { Rewritable, MacroBody, Skip };
 
-static std::optional<SourceLocation> getRewritableLoc(
+struct ClassifiedLoc {
+    LocClass kind;
+    SourceLocation spelling;
+};
+
+static ClassifiedLoc classifyLoc(
     SourceLocation loc, const SourceManager &SM,
     llvm::StringRef projectRoot = "",
     MacroPolicy policy = MacroPolicy::RejectAll) {
     auto spelling = SM.getSpellingLoc(loc);
     if (!isInProjectScope(SM, spelling, projectRoot))
-        return std::nullopt;
+        return {LocClass::Skip, spelling};
     if (SM.isMacroBodyExpansion(loc))
-        return std::nullopt;
+        return {LocClass::MacroBody, spelling};
     if (policy == MacroPolicy::RejectAll && SM.isMacroArgExpansion(loc))
-        return std::nullopt;
-    return spelling;
+        return {LocClass::Skip, spelling};
+    return {LocClass::Rewritable, spelling};
+}
+
+static bool flagIfMacroBody(ClassifiedLoc cl, const SourceManager &SM,
+                            Reporter &rep, FindingKind kind,
+                            std::string_view old_text,
+                            std::string_view new_text) {
+    if (cl.kind != LocClass::MacroBody)
+        return false;
+    std::string flagText = std::string(new_text) + " (inside macro body)";
+    rep.addFinding(kind, SM, cl.spelling, old_text, flagText,
+                   FindingAction::Flag);
+    return true;
 }
 
 static llvm::Expected<SmallVector<Edit, 1>>
@@ -192,14 +210,30 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
         if (!TL)
             return noEdits();
 
-        auto rewriteLoc = getRewritableLoc(TL->getBeginLoc(), *R.SourceManager,
-                                          projectRoot);
-        if (!rewriteLoc)
+        auto cl = classifyLoc(TL->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         const auto &SM = *R.SourceManager;
         auto text = getSourceText(TL->getSourceRange(), SM,
                                   R.Context->getLangOpts());
+
+        if (cl.kind == LocClass::MacroBody) {
+            auto qualName = TL->getType().getUnqualifiedType()
+                .getDesugaredType(*R.Context)
+                .getAsString(R.Context->getPrintingPolicy());
+            for (const auto &rule : kTypeRules) {
+                if (qualName.find(rule.from) != std::string::npos) {
+                    std::string_view suggestion = rule.to.empty()
+                        ? "decompose into explicit scalar_type, layout, device args"
+                        : rule.to;
+                    flagIfMacroBody(cl, SM, rep, FindingKind::Type,
+                                    rule.from, suggestion);
+                    return noEdits();
+                }
+            }
+            return noEdits();
+        }
 
         for (const auto &rule : kTypeRules) {
             auto pos = findTypeRuleMatch(text, rule);
@@ -218,7 +252,7 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
             if (!rewrite || flag_only)
                 return noEdits();
 
-            auto replaceStart = rewriteLoc->getLocWithOffset(
+            auto replaceStart = cl.spelling.getLocWithOffset(
                 static_cast<int>(pos));
             return singleEdit(replaceStart,
                               static_cast<unsigned>(rule.from.size()),
@@ -406,13 +440,21 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
             return noEdits();
 
         const auto &SM = *R.SourceManager;
-        auto spellingLoc = getRewritableLoc(CE->getBeginLoc(), SM,
-                                            projectRoot, MacroPolicy::AllowArgs);
-        if (!spellingLoc)
+        auto cl = classifyLoc(CE->getBeginLoc(), SM, projectRoot,
+                              MacroPolicy::AllowArgs);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         const auto *ME = R.Nodes.getNodeAs<MemberExpr>("dataPtrMember");
         if (!ME)
+            return noEdits();
+
+        const bool use_const = shouldUseConstDataPtr(CE, *R.Context);
+        const std::string replacement =
+            use_const ? "const_data_ptr" : "mutable_data_ptr";
+
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::DataPtr,
+                            "data_ptr", replacement))
             return noEdits();
 
         if (ME->hasExplicitTemplateArgs()) {
@@ -420,7 +462,7 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
             if (!tArgs.empty()) {
                 const auto argType = tArgs[0].getArgument().getAsType();
                 if (argType->isDependentType()) {
-                    rep.addFinding(FindingKind::DataPtr, SM, *spellingLoc,
+                    rep.addFinding(FindingKind::DataPtr, SM, cl.spelling,
                                    "data_ptr<dependent>",
                                    "mutable_data_ptr<T> (dependent type)",
                                    FindingAction::Flag);
@@ -429,16 +471,12 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
             }
         }
 
-        const bool use_const = shouldUseConstDataPtr(CE, *R.Context);
-        const std::string replacement =
-            use_const ? "const_data_ptr" : "mutable_data_ptr";
-
         auto loc = CE->getBeginLoc();
         const bool in_macro = SM.isMacroArgExpansion(loc);
         auto memberLoc = in_macro ? SM.getSpellingLoc(ME->getMemberLoc())
                                   : ME->getMemberLoc();
 
-        rep.addFinding(FindingKind::DataPtr, SM, *spellingLoc, "data_ptr",
+        rep.addFinding(FindingKind::DataPtr, SM, cl.spelling, "data_ptr",
                        replacement);
         if (!rewrite)
             return noEdits();
@@ -469,9 +507,8 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
         if (!CE)
             return noEdits();
 
-        auto rewriteLoc = getRewritableLoc(CE->getBeginLoc(),
-                                           *R.SourceManager, projectRoot);
-        if (!rewriteLoc)
+        auto cl = classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         const auto &SM = *R.SourceManager;
@@ -490,6 +527,11 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
             if (methodName != rule.from)
                 continue;
 
+            std::string replacement = std::string(rule.to) + "(...)";
+            if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc,
+                                methodName, replacement))
+                return noEdits();
+
             auto objText = getSourceText(obj->getSourceRange(), SM, LO);
             std::string argsText;
             auto argsRange = callArgs("methodCall")(R);
@@ -498,8 +540,7 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
             else
                 llvm::consumeError(argsRange.takeError());
 
-            std::string replacement =
-                std::string(rule.to) + "(" + objText;
+            replacement = std::string(rule.to) + "(" + objText;
             if (!argsText.empty())
                 replacement += ", " + argsText;
             replacement += ")";
@@ -545,17 +586,20 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
         if (!Ctor)
             return noEdits();
 
-        auto rewriteLoc = getRewritableLoc(Ctor->getBeginLoc(),
-                                           *R.SourceManager, projectRoot);
-        if (!rewriteLoc)
+        auto cl = classifyLoc(Ctor->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         auto text = getSourceText(Ctor->getSourceRange(), *R.SourceManager,
                                   R.Context->getLangOpts());
+        std::string_view suggestion =
+            "decompose into explicit scalar_type, layout, device args";
+        if (flagIfMacroBody(cl, *R.SourceManager, rep, FindingKind::Type,
+                            text, suggestion))
+            return noEdits();
+
         rep.addFinding(FindingKind::Type, *R.SourceManager, Ctor->getBeginLoc(),
-                       text,
-                       "decompose into explicit scalar_type, layout, device args",
-                       FindingAction::Flag);
+                       text, suggestion, FindingAction::Flag);
         return noEdits();
     };
 
@@ -606,13 +650,17 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
         return singleEdit(fullRange, replacement);
     };
 
-    auto sizesGen = [rewriteSizes, projectRoot](const MatchFinder::MatchResult &R)
+    auto sizesGen = [&rep, rewriteSizes, projectRoot](const MatchFinder::MatchResult &R)
             -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *ASE =
             R.Nodes.getNodeAs<ArraySubscriptExpr>("sizesSubscript");
         if (!ASE)
             return noEdits();
-        if (!getRewritableLoc(ASE->getBeginLoc(), *R.SourceManager, projectRoot))
+        auto cl = classifyLoc(ASE->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
+            return noEdits();
+        if (flagIfMacroBody(cl, *R.SourceManager, rep, FindingKind::MethodToFunc,
+                            "sizes()[i]", "size(i)"))
             return noEdits();
         const auto *sizesCall =
             R.Nodes.getNodeAs<CXXMemberCallExpr>("sizesCall");
@@ -632,13 +680,17 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
         EditGenerator(sizesGen)));
 
     // CXXOperatorCallExpr version (overloaded operator[])
-    auto sizesOpGen = [rewriteSizes, projectRoot](const MatchFinder::MatchResult &R)
+    auto sizesOpGen = [&rep, rewriteSizes, projectRoot](const MatchFinder::MatchResult &R)
             -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *Sub =
             R.Nodes.getNodeAs<CXXOperatorCallExpr>("sizesSubscriptOp");
         if (!Sub || Sub->getNumArgs() < 2)
             return noEdits();
-        if (!getRewritableLoc(Sub->getBeginLoc(), *R.SourceManager, projectRoot))
+        auto cl = classifyLoc(Sub->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
+            return noEdits();
+        if (flagIfMacroBody(cl, *R.SourceManager, rep, FindingKind::MethodToFunc,
+                            "sizes()[i]", "size(i)"))
             return noEdits();
         const auto *sizesCall = dyn_cast<CXXMemberCallExpr>(
             Sub->getArg(0)->IgnoreImplicit());
@@ -726,9 +778,8 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
         if (!CE)
             return noEdits();
 
-        auto rewriteLoc = getRewritableLoc(CE->getBeginLoc(),
-                                           *R.SourceManager, projectRoot);
-        if (!rewriteLoc)
+        auto cl = classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         const auto &SM = *R.SourceManager;
@@ -740,6 +791,10 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
         auto objText = getSourceText(obj->getSourceRange(), SM, LO);
         std::string replacement = objText + ".element_size()";
         auto fullText = getSourceText(CE->getSourceRange(), SM, LO);
+
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::FreeFunc,
+                            fullText, replacement))
+            return noEdits();
 
         rep.addFinding(FindingKind::FreeFunc, SM, CE->getBeginLoc(),
                        fullText, replacement);
@@ -766,13 +821,16 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
         if (!CE)
             return noEdits();
 
-        auto rewriteLoc = getRewritableLoc(CE->getBeginLoc(),
-                                           *R.SourceManager, projectRoot);
-        if (!rewriteLoc)
+        auto cl = classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         auto text = getSourceText(CE->getSourceRange(), *R.SourceManager,
                                   R.Context->getLangOpts());
+        if (flagIfMacroBody(cl, *R.SourceManager, rep, FindingKind::FreeFunc,
+                            text, "tensor.element_size()"))
+            return noEdits();
+
         rep.addFinding(FindingKind::FreeFunc, *R.SourceManager,
                        CE->getBeginLoc(), text,
                        "tensor.element_size()", FindingAction::Flag);
@@ -795,9 +853,8 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
         if (!CE)
             return noEdits();
 
-        auto rewriteLoc = getRewritableLoc(CE->getBeginLoc(),
-                                           *R.SourceManager, projectRoot);
-        if (!rewriteLoc)
+        auto cl = classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         const auto &SM = *R.SourceManager;
@@ -818,6 +875,10 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
             if (canonicalName != rule.from &&
                 writtenText != rule.from)
                 continue;
+
+            if (flagIfMacroBody(cl, SM, rep, FindingKind::FreeFunc,
+                                writtenText, rule.to))
+                return noEdits();
 
             auto oldFunc = rule.from.substr(
                 rule.from.rfind(':') + 1);
@@ -869,9 +930,8 @@ static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
         if (!CE || !isTensorType(CE->getImplicitObjectArgument()))
             return noEdits();
 
-        auto rewriteLoc = getRewritableLoc(CE->getBeginLoc(),
-                                           *R.SourceManager, projectRoot);
-        if (!rewriteLoc)
+        auto cl = classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         const auto &SM = *R.SourceManager;
@@ -882,6 +942,10 @@ static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
 
         std::string replacement = objText + ".numel() * " +
                                   objText + ".element_size()";
+
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc,
+                            fullText, replacement))
+            return noEdits();
 
         const bool sideEffectFree =
             isa<DeclRefExpr>(obj->IgnoreParenImpCasts()) ||
@@ -922,8 +986,8 @@ static void addNulloptRule(std::vector<RewriteRule> &rules, Reporter &rep,
             return noEdits();
 
         const auto &SM = *R.SourceManager;
-        auto rewriteLoc = getRewritableLoc(DRE->getBeginLoc(), SM, projectRoot);
-        if (!rewriteLoc)
+        auto cl = classifyLoc(DRE->getBeginLoc(), SM, projectRoot);
+        if (cl.kind == LocClass::Skip)
             return noEdits();
 
         auto text = getSourceText(DRE->getSourceRange(), SM,
@@ -931,12 +995,16 @@ static void addNulloptRule(std::vector<RewriteRule> &rules, Reporter &rep,
         if (text != "c10::nullopt" && text != "::c10::nullopt")
             return noEdits();
 
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::Type,
+                            text, "std::nullopt"))
+            return noEdits();
+
         rep.addFinding(FindingKind::Type, SM, DRE->getBeginLoc(),
                        text, "std::nullopt");
         if (!rewrite)
             return noEdits();
 
-        return singleEdit(*rewriteLoc,
+        return singleEdit(cl.spelling,
                           static_cast<unsigned>(text.size()),
                           "std::nullopt");
     };

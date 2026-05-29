@@ -15,14 +15,23 @@ void Reporter::addFinding(FindingKind kind, const clang::SourceManager &SM,
     if (ploc.isInvalid())
         return;
 
-    addFinding(kind, ploc.getFilename(), ploc.getLine(), ploc.getColumn(),
-               old_text, new_text, action);
+    std::lock_guard<std::mutex> lock(mutex_);
+    addFindingLocked(kind, ploc.getFilename(), ploc.getLine(), ploc.getColumn(),
+                     old_text, new_text, action);
 }
 
 void Reporter::addFinding(FindingKind kind, std::string_view file,
                            unsigned line, unsigned col,
                            std::string_view old_text,
                            std::string_view new_text, FindingAction action) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    addFindingLocked(kind, file, line, col, old_text, new_text, action);
+}
+
+void Reporter::addFindingLocked(FindingKind kind, std::string_view file,
+                                unsigned line, unsigned col,
+                                std::string_view old_text,
+                                std::string_view new_text, FindingAction action) {
     if (!seen_.emplace(std::string(file), line, col, std::string(old_text)).second)
         return;
 
@@ -75,11 +84,29 @@ void Reporter::printJson() const {
     llvm::outs() << "  ],\n";
     llvm::outs() << "  \"rewrites\": " << rewrite_count_ << ",\n";
     llvm::outs() << "  \"flags\": " << flag_count_ << ",\n";
-    llvm::outs() << "  \"parse_errors\": " << parse_error_count_ << "\n";
+    llvm::outs() << "  \"parse_errors\": " << parse_error_count_ << ",\n";
+    llvm::outs() << "  \"parse_errors_by_file\": {";
+    {
+        size_t i = 0;
+        for (const auto &[file, count] : parse_errors_by_file_) {
+            if (i++ > 0) llvm::outs() << ",";
+            llvm::outs() << "\n    \"" << jsonEscape(file) << "\": " << count;
+        }
+    }
+    if (!parse_errors_by_file_.empty()) llvm::outs() << "\n  ";
+    llvm::outs() << "}\n";
     llvm::outs() << "}\n";
 }
 
+std::map<std::string, std::vector<Finding>> Reporter::findingsByFile() const {
+    std::map<std::string, std::vector<Finding>> result;
+    for (const auto &f : findings_)
+        result[f.file].push_back(f);
+    return result;
+}
+
 void Reporter::recordParseError(const std::string &file) {
+    std::lock_guard<std::mutex> lock(mutex_);
     ++parse_error_count_;
     ++parse_errors_by_file_[file];
 }
@@ -114,6 +141,7 @@ void Reporter::suppressRedundantFlags() {
 }
 
 bool Reporter::hasNonIncludeFindingsForFile(std::string_view filename) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (const auto &f : findings_) {
         if (f.kind != FindingKind::Include && f.file == filename)
             return true;
