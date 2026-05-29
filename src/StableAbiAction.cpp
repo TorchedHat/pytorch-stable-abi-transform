@@ -187,8 +187,15 @@ void StableAbiFrontendAction::EndSourceFileAction() {
                 llvm::StringRef srcPath = optRef->getName();
 
                 llvm::SmallString<256> relPath(srcPath);
-                llvm::sys::path::replace_path_prefix(
-                    relPath, opts_.project_root, "");
+                if (!llvm::sys::path::replace_path_prefix(
+                        relPath, opts_.project_root, "")) {
+                    llvm::errs() << "warning: skipping file outside project root: "
+                                 << srcPath << "\n";
+                    continue;
+                }
+                while (!relPath.empty() &&
+                       llvm::sys::path::is_separator(relPath[0]))
+                    relPath.erase(relPath.begin());
 
                 llvm::SmallString<256> outPath(opts_.output_dir);
                 llvm::sys::path::append(outPath, relPath);

@@ -89,10 +89,10 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
         makeAbsolute(p, base);
         warnUnexpanded(p, "extra_includes");
     }
-    for (auto &p : out.sources) {
+    for (auto &p : out.transform) {
         expandVars(p, out);
         makeAbsolute(p, base);
-        warnUnexpanded(p, "sources");
+        warnUnexpanded(p, "transform");
     }
     warnUnexpanded(out.pytorch_root, "pytorch_root");
     warnUnexpanded(out.project_root, "project_root");
@@ -178,7 +178,7 @@ format: text
 pytorch_root: auto
 
 # Project root — rewrites files under this path (headers included).
-# Also auto-discovers .cpp/.cu source files when 'sources' is omitted.
+# Also auto-discovers .cpp/.cu source files when 'transform' is omitted.
 project_root: ./csrc
 
 # Compiler flags passed to clang
@@ -195,9 +195,11 @@ compiler_flags:
 # extra_includes:
 #   - ./csrc
 
-# Explicit source files or directories (optional — auto-discovered from project_root if omitted)
+# Files or directories to transform (optional — auto-discovered from project_root if omitted).
 # Directory entries are recursively walked for .cpp/.cu/.cuh files.
-# sources:
+# Use this for incremental migration: set project_root for full include scope,
+# then list only the files you want to transform in this run.
+# transform:
 #   - csrc/attention/           # walk entire directory
 #   - csrc/cache.cu             # single file
 
