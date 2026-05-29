@@ -53,6 +53,7 @@ public:
     void printJson() const;
 
     void suppressRedundantFlags();
+    void sortFindings();
 
     [[nodiscard]] size_t rewriteCount() const { return rewrite_count_; }
     [[nodiscard]] size_t flagCount() const { return flag_count_; }

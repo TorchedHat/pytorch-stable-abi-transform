@@ -121,6 +121,16 @@ void Reporter::printParseWarnings() const {
         llvm::errs() << "  " << file << ": " << count << " error(s)\n";
 }
 
+void Reporter::sortFindings() {
+    std::sort(findings_.begin(), findings_.end(),
+              [](const Finding &a, const Finding &b) {
+                  if (a.file != b.file) return a.file < b.file;
+                  if (a.line != b.line) return a.line < b.line;
+                  if (a.col != b.col) return a.col < b.col;
+                  return a.old_text < b.old_text;
+              });
+}
+
 void Reporter::suppressRedundantFlags() {
     std::set<std::pair<std::string, unsigned>> covered;
     for (const auto &f : findings_)

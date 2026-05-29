@@ -65,7 +65,7 @@ Omit `transform` to process everything under `project_root`.
 stable-abi-transform
 ```
 
-The tool auto-discovers all `.cpp`, `.cu`, and `.cuh` files under `project_root` and reports every usage of unstable PyTorch internals:
+The tool auto-discovers all `.cpp`, `.cu`, and `.cuh` files under `project_root` and reports every usage of unstable PyTorch internals. Audit runs in parallel by default (`--jobs=0` auto-detects cores):
 
 ```
 [MACRO] csrc/cache_kernels.cu:45:5       TORCH_CHECK -> STD_TORCH_CHECK
@@ -82,7 +82,7 @@ Each finding is either:
 - **Auto-rewritable** — the tool can transform this automatically
 - **Flagged** — requires manual review (no stable equivalent, or inside a macro body)
 
-### vllm results
+### vllm results (snapshot, May 2026)
 
 ```
 Summary: 2,554 auto-rewritable, 429 flagged for manual review
@@ -113,7 +113,7 @@ stable-abi-transform --format=json
 stable-abi-transform --mode=plan
 ```
 
-The plan mode analyzes the include dependency graph and partitions files into groups that must migrate together (they share headers with unstable API usage):
+Plan mode analyzes the include dependency graph and partitions files into groups that must migrate together (they share headers with unstable API usage). Like audit, it runs in parallel by default:
 
 ```
 Migration plan: 13 groups (all independent — transform in parallel)
@@ -237,6 +237,8 @@ stable-abi-transform --mode=verify --verify-method=regex
 | CUDA guard | `at::cuda::OptionalCUDAGuard` | `torch::stable::accelerator::DeviceGuard` |
 | CUDA stream | `at::cuda::getCurrentCUDAStream()` | `aoti_torch_get_current_cuda_stream()` |
 | nullopt/optional | `c10::optional<T>` / `c10::nullopt` | `std::optional<T>` / `std::nullopt` |
+| Dispatch macro | `AT_DISPATCH_FLOATING_TYPES` | `THO_DISPATCH_V2` + `AT_FLOATING_TYPES` |
+| Op registration | `TORCH_LIBRARY` | `STABLE_TORCH_LIBRARY` |
 
 For vllm: **2,554 automatic transformations** across 235 files.
 
@@ -248,7 +250,7 @@ PyTorch internal APIs that have not been stabilized yet:
 
 - `at::vec::Vectorized<T>` — SIMD vectorization (CPU kernels)
 - `at::native::cpublas::brgemm` — CPU BLAS routines
-- `at::empty_like`, `at::zeros`, `at::ones` — factory functions not yet in stable ops
+- `at::ones` — factory function not yet in stable ops
 - `at::stack`, `at::clamp`, `at::sigmoid`, `at::silu` — higher-level ops
 - `c10::InferenceMode` — inference mode guard
 

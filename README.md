@@ -20,17 +20,23 @@ mkdir -p build && cmake -GNinja -B build -S . && cmake --build build
 
 # Generate config
 ./build/stable-abi-transform --init-config > .stable-abi.yaml
-# Edit: set pytorch_root, project_root, include_paths
+# Edit: set pytorch_root, project_root
 
 # Audit (read-only)
 ./build/stable-abi-transform                        # mode: audit
 
+# Migration plan (dependency-aware grouping)
+./build/stable-abi-transform --mode=plan
+
 # Preview changes
-# set mode: rewrite in .stable-abi.yaml
-./build/stable-abi-transform --dry-run
+./build/stable-abi-transform --mode=rewrite --dry-run
 
 # Rewrite + auto-verify
-./build/stable-abi-transform
+./build/stable-abi-transform --mode=rewrite
+
+# Or without a config file — pass flags directly:
+./build/stable-abi-transform --mode=audit file.cu -- -std=c++20 \
+  -I/path/to/pytorch/torch/csrc/api/include -I/path/to/pytorch
 ```
 
 Before/after — the tool rewrites this:
@@ -58,13 +64,16 @@ void foo(const torch::stable::Tensor& input) {
 
 Patterns it can't auto-rewrite (TensorOptions decomposition, PYBIND11_MODULE replacement, project dispatch macros) are flagged with actionable guidance.
 
+Supports `.cpp`, `.cu`, and `.cuh` files. Audit and plan modes run in parallel (`--jobs`) for large projects. Use the `transform` config field to target specific files for incremental migration. See the [demo walkthrough](docs/demo-walkthrough.md) for a real-world example analyzing vLLM (~50k lines of C++/CUDA).
+
 ## Verification
 
 Compile-based verification creates a shadow include tree with *only* stable headers. If the file compiles against it, migration is provably complete — zero false positives, zero false negatives. See [docs/user-guide.md](docs/user-guide.md) for details.
 
 ## Documentation
 
-- **[User Guide](docs/user-guide.md)** — full reference: modes, config, flags, verification, architecture, rule regeneration, CI integration
+- **[Demo Walkthrough](docs/demo-walkthrough.md)** — real-world case study (vLLM, 235 files)
+- **[User Guide](docs/user-guide.md)** — full reference: modes, config, flags, verification, architecture
 - **[Claude Skill](docs/claude-skill.md)** — Claude Code skill for agent-assisted migration
 - **[CLAUDE.md](CLAUDE.md)** — project context for Claude Code
 

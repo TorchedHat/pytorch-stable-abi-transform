@@ -466,6 +466,7 @@ static int runWithConfig(stable_abi::Config &cfg,
         return 0;
     }
 
+    reporter.sortFindings();
     reporter.suppressRedundantFlags();
     if (json) {
         reporter.printJson();

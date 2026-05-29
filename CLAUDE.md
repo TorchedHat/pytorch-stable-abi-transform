@@ -13,6 +13,27 @@ Requires: LLVM 19, clang-cpp, g++-13, C++20.
 
 ## Usage
 
+### With YAML config (recommended)
+
+```bash
+$TOOL --init-config > .stable-abi.yaml   # generate starter config
+# Edit: set pytorch_root, project_root
+
+$TOOL                                     # audit (default mode)
+$TOOL --mode=plan                         # migration plan
+$TOOL --mode=rewrite --dry-run            # preview changes
+$TOOL --mode=rewrite                      # transform + auto-verify
+$TOOL --mode=verify                       # verify stable-only
+```
+
+CLI flags override the config file. Positional arguments override the `transform` field:
+
+```bash
+$TOOL --mode=rewrite ./csrc/cache.cu      # transform one file using config settings
+```
+
+### Without config (direct CLI)
+
 ```bash
 TOOL=build/stable-abi-transform
 PYTORCH=/path/to/pytorch  # source tree or install root
@@ -58,14 +79,7 @@ $TOOL --mode=plan --project-root=./csrc -- [same flags]
 
 ### YAML config
 
-Instead of passing flags on every invocation, create `.stable-abi.yaml`:
-
-```bash
-$TOOL --init-config   # generates starter config
-$TOOL                 # auto-loads .stable-abi.yaml
-```
-
-Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `verify_method`, `cuda_include`, `extra_includes`, `transform`, `include_paths`, `output_dir`. `transform` lists files or directories to process (directories are recursively walked for .cpp/.cu/.cuh files); if omitted, all files under `project_root` are auto-discovered. PyTorch include paths are auto-derived from `pytorch_root` — set it to `auto` to detect from pip-installed torch.
+Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `verify_method`, `cuda_include`, `extra_includes`, `transform`, `include_paths`, `output_dir`, `jobs`. `transform` lists files or directories to process (directories are recursively walked for .cpp/.cu/.cuh files); if omitted, all files under `project_root` are auto-discovered. PyTorch include paths are auto-derived from `pytorch_root` — set it to `auto` to detect from pip-installed torch.
 
 ### .cuh files
 
