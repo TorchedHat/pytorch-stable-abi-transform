@@ -65,7 +65,7 @@ $TOOL --init-config   # generates starter config
 $TOOL                 # auto-loads .stable-abi.yaml
 ```
 
-Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `verify_method`, `cuda_include`, `extra_includes`, `sources`, `include_paths`, `output_dir`. Sources can be files or directories (directories are recursively walked for .cpp/.cu/.cuh files). PyTorch include paths are auto-derived from `pytorch_root` — set it to `auto` to detect from pip-installed torch.
+Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `verify_method`, `cuda_include`, `extra_includes`, `transform`, `include_paths`, `output_dir`. `transform` lists files or directories to process (directories are recursively walked for .cpp/.cu/.cuh files); if omitted, all files under `project_root` are auto-discovered. PyTorch include paths are auto-derived from `pytorch_root` — set it to `auto` to detect from pip-installed torch.
 
 ### .cuh files
 
@@ -97,7 +97,7 @@ python3 scripts/migration_progress.py --audit-json audit.json --source-dir csrc 
 RESOURCE_DIR=/usr/lib/clang/19 bash test/run_tests.sh
 ```
 
-13 test cases: input/expected pairs in test/inputs/ and test/expected/.
+14 test cases: input/expected pairs in test/inputs/ and test/expected/.
 
 ## Architecture
 

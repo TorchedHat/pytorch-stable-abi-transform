@@ -29,6 +29,21 @@ COMMON_ARGS=(
     -I"$CUDA_INCLUDE"
 )
 
+echo "--- Input integrity check ---"
+for input_file in "$INPUTS"/*.cpp "$INPUTS"/*.cu; do
+    [ -f "$input_file" ] || continue
+    basename="$(basename "$input_file")"
+    expected_file="$EXPECTED/$basename"
+    [ -f "$expected_file" ] || continue
+    if diff -q "$input_file" "$expected_file" > /dev/null 2>&1; then
+        echo "CORRUPT  $basename: input is identical to expected output"
+        echo "         Run: git checkout HEAD -- test/inputs/$basename"
+        exit 1
+    fi
+done
+echo "All inputs differ from expected outputs."
+echo ""
+
 passed=0
 failed=0
 skipped=0

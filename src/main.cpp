@@ -61,7 +61,7 @@ static llvm::cl::opt<std::string>
 static llvm::cl::opt<std::string>
     ProjectRoot("project-root",
                 llvm::cl::desc("Project root directory — rewrites files under this path (not just main file). "
-                               "Also auto-discovers .cpp/.cu source files when no sources given."),
+                               "Also auto-discovers .cpp/.cu source files when no transform targets given."),
                 llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
@@ -302,7 +302,7 @@ static int runWithConfig(stable_abi::Config &cfg,
         projectRoot = std::string(abs);
     }
 
-    std::vector<std::string> sources = expandSources(cfg.sources);
+    std::vector<std::string> sources = expandSources(cfg.transform);
     if (sources.empty() && !projectRoot.empty()) {
         if (!llvm::sys::fs::is_directory(projectRoot)) {
             llvm::errs() << "error: project root is not a directory: "
@@ -551,7 +551,7 @@ int main(int argc, const char **argv) {
         }
         auto &cliSources = OptionsParser.getSourcePathList();
         if (!cliSources.empty())
-            cfg.sources = cliSources;
+            cfg.transform = cliSources;
         return runWithConfig(cfg);
     }
 
@@ -583,6 +583,6 @@ int main(int argc, const char **argv) {
         llvm::errs() << "error: " << resolveErr << "\n";
         return 1;
     }
-    cfg.sources = cliSources;
+    cfg.transform = cliSources;
     return runWithConfig(cfg, &OptionsParser.getCompilations());
 }

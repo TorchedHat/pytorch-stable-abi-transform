@@ -18,7 +18,7 @@ struct Config {
     std::vector<std::string> compiler_flags;
     std::vector<std::string> include_paths;
     std::vector<std::string> extra_includes;
-    std::vector<std::string> sources;
+    std::vector<std::string> transform;
     VerifyMethod verify_method = VerifyMethod::Compile;
     std::string cuda_include;
     std::string output_dir;
@@ -68,7 +68,7 @@ template <> struct MappingTraits<stable_abi::Config> {
         io.mapOptional("compiler_flags", c.compiler_flags);
         io.mapOptional("include_paths", c.include_paths);
         io.mapOptional("extra_includes", c.extra_includes);
-        io.mapOptional("sources", c.sources);
+        io.mapOptional("transform", c.transform);
         io.mapOptional("verify_method", c.verify_method);
         io.mapOptional("cuda_include", c.cuda_include);
         io.mapOptional("output_dir", c.output_dir);
