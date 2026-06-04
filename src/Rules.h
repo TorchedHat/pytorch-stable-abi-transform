@@ -351,4 +351,38 @@ inline constexpr std::array kFreeFuncRules = {
     FreeFuncRule{"at::zeros", "torch::stable::full"},
 };
 
+// Methods that exist on stable types (torch::stable::Tensor, torch::stable::Device)
+// unchanged. These need no rewrite and should not be flagged by the method catch-all.
+// Derived from tensor_struct.h and device_struct.h.
+inline constexpr std::array kStableMethodWhitelist = {
+    // Tensor methods
+    std::string_view("dim"),
+    std::string_view("numel"),
+    std::string_view("size"),
+    std::string_view("stride"),
+    std::string_view("element_size"),
+    std::string_view("scalar_type"),
+    std::string_view("is_contiguous"),
+    std::string_view("device"),
+    std::string_view("get_device_index"),
+    std::string_view("is_cuda"),
+    std::string_view("is_cpu"),
+    std::string_view("defined"),
+    std::string_view("storage_offset"),
+    std::string_view("data_ptr"),
+    std::string_view("mutable_data_ptr"),
+    std::string_view("const_data_ptr"),
+    // Device methods
+    std::string_view("type"),
+    std::string_view("index"),
+    std::string_view("has_index"),
+    std::string_view("validate"),
+    std::string_view("set_index"),
+    // StableLibrary methods
+    std::string_view("def"),
+    std::string_view("impl"),
+    std::string_view("fn"),
+    std::string_view("set_python_module"),
+};
+
 } // namespace stable_abi

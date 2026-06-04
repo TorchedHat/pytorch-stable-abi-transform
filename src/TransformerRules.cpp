@@ -1030,6 +1030,71 @@ static bool isUnstableNamespace(llvm::StringRef qualName) {
     return false;
 }
 
+static void addUnstableMethodCallCatchAll(std::vector<RewriteRule> &rules,
+                                          Reporter &rep, const LocFilter &loc) {
+    auto projectRoot = loc.projectRoot;
+
+    llvm::StringSet<> handled;
+    for (const auto &r : kMethodToFreeFuncRules)
+        handled.insert(r.from);
+    for (const auto &r : kMethodRenameRules)
+        handled.insert(r.from);
+    for (const auto &m : kStableMethodWhitelist)
+        handled.insert(m);
+
+    auto handledPtr = std::make_shared<llvm::StringSet<>>(std::move(handled));
+
+    auto editGen = [&rep, projectRoot, handledPtr](
+                       const MatchFinder::MatchResult &R)
+            -> llvm::Expected<SmallVector<Edit, 1>> {
+        const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("catchallMethod");
+        if (!CE)
+            return noEdits();
+
+        const auto &SM = *R.SourceManager;
+        auto spelling = SM.getSpellingLoc(CE->getBeginLoc());
+        if (!isInProjectScope(SM, spelling, projectRoot))
+            return noEdits();
+
+        const auto *obj = CE->getImplicitObjectArgument();
+        if (!obj)
+            return noEdits();
+        auto objType = obj->getType().getNonReferenceType().getUnqualifiedType();
+        if (objType->isPointerType())
+            objType = objType->getPointeeType().getNonReferenceType()
+                          .getUnqualifiedType();
+        const auto *RD = objType->getAsCXXRecordDecl();
+        if (!RD)
+            return noEdits();
+        if (!isUnstableNamespace(RD->getQualifiedNameAsString()))
+            return noEdits();
+
+        const auto *MD = CE->getMethodDecl();
+        if (!MD || MD->isOverloadedOperator() ||
+            isa<CXXDestructorDecl>(MD) || isa<CXXConversionDecl>(MD))
+            return noEdits();
+
+        auto methodName = MD->getNameAsString();
+        if (handledPtr->contains(methodName))
+            return noEdits();
+
+        bool inMacroBody = SM.isMacroBodyExpansion(CE->getBeginLoc());
+        std::string text = inMacroBody
+            ? ("." + methodName + "()")
+            : getSourceText(CE->getSourceRange(), SM, R.Context->getLangOpts());
+        std::string msg = "." + methodName + "() has no stable ABI equivalent";
+        if (inMacroBody) msg += " (inside macro body)";
+
+        rep.addFinding(FindingKind::Flag, SM, spelling,
+                       text, msg, FindingAction::Flag);
+        return noEdits();
+    };
+
+    rules.push_back(makeRule(
+        cxxMemberCallExpr(loc.stmt).bind("catchallMethod"),
+        EditGenerator(editGen)));
+}
+
 static void addUnstableTypeCatchAll(std::vector<RewriteRule> &rules,
                                      Reporter &rep, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
@@ -1140,6 +1205,7 @@ RewriteRule buildTransformerRules(Reporter &rep, bool rewrite_mode,
     addFreeFuncRules(rules, rep, rewrite_mode, loc);
     addNbytesRule(rules, rep, rewrite_mode, loc);
     addNulloptRule(rules, rep, rewrite_mode, loc);
+    addUnstableMethodCallCatchAll(rules, rep, loc);
     addUnstableTypeCatchAll(rules, rep, loc);
     addUnstableRefCatchAll(rules, rep, loc);
     return applyFirst(rules);
