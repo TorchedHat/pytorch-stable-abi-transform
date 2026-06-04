@@ -440,6 +440,33 @@ else
     comp_failed=$((comp_failed + 1))
 fi
 
+# Method catch-all: unhandled methods on unstable types must be flagged
+METHCATCH_INPUT="$WORK_DIR/method_catchall.cpp"
+cat > "$METHCATCH_INPUT" << 'METHEOF'
+#include <ATen/ATen.h>
+
+void foo(at::Tensor& t) {
+    auto opts = t.options();
+    bool pinned = t.is_pinned();
+}
+METHEOF
+
+methcatch_out=$("$TOOL" --mode=audit --format=json "$METHCATCH_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+methcatch_flags=$(echo "$methcatch_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+flags = [f for f in d['findings'] if f['kind'] == 'FLAG' and 'no stable ABI equivalent' in f['new']]
+print(len(flags))
+")
+if [ "$methcatch_flags" -eq 2 ]; then
+    echo "PASS  method-catch-all: 2 unhandled methods flagged"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  method-catch-all: expected 2 flags, got $methcatch_flags"
+    echo "$methcatch_out" | python3 -m json.tool 2>/dev/null | head -30
+    comp_failed=$((comp_failed + 1))
+fi
+
 echo ""
 echo "Completeness tests: $comp_passed passed, $comp_failed failed"
 [ "$comp_failed" -gt 0 ] && exit 1

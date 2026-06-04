@@ -57,7 +57,8 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
     llvm::sys::fs::make_absolute(configDir);
     auto base = llvm::StringRef(configDir);
 
-    makeAbsolute(out.pytorch_root, base);
+    if (out.pytorch_root != "auto")
+        makeAbsolute(out.pytorch_root, base);
     makeAbsolute(out.project_root, base);
     makeAbsolute(out.cuda_include, base);
     expandVars(out.output_dir, out);
