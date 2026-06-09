@@ -465,6 +465,7 @@ def generate_rules_h(
     lines.append('inline constexpr std::array kMethodRenameRules = {')
     lines.append('    MethodRenameRule{"dtype", "scalar_type"},')
     lines.append('    MethodRenameRule{"itemsize", "element_size"},')
+    lines.append('    MethodRenameRule{"data_ptr", "mutable_data_ptr"},')
     lines.append('};')
     lines.append('')
 

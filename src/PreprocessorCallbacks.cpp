@@ -307,14 +307,16 @@ static const std::vector<std::string> &getSkippedRegionPatterns() {
             unique.insert(std::string(r.old_name));
         for (const auto &r : kFreeFuncRules)
             unique.insert(std::string(r.from));
-        for (const auto &r : kMethodToFreeFuncRules)
+        for (const auto &r : kMethodToFreeFuncRules) {
             unique.insert("." + std::string(r.from) + "(");
-        for (const auto &r : kMethodRenameRules)
+            unique.insert("." + std::string(r.from) + "<");
+        }
+        for (const auto &r : kMethodRenameRules) {
             unique.insert("." + std::string(r.from) + "(");
+            unique.insert("." + std::string(r.from) + "<");
+        }
         for (const auto &r : kNamespaceRules)
             unique.insert(std::string(r.from));
-        // data_ptr<T>() is the one method with a template arg — .data_ptr( won't match
-        unique.insert(".data_ptr<");
         std::vector<std::string> result(unique.begin(), unique.end());
         std::sort(result.begin(), result.end(),
                   [](const auto &a, const auto &b) { return a.size() > b.size(); });

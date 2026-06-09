@@ -23,7 +23,9 @@ enum class FindingKind {
     DeviceGuard,
     MethodToFunc,
     FreeFunc,
-    Flag,
+    UnstableType,
+    UnstableRef,
+    UnstableMethod,
 };
 
 struct Finding {
@@ -48,7 +50,7 @@ public:
                     std::string_view new_text,
                     FindingAction action = FindingAction::Rewrite);
 
-    void printReport() const;
+    void printReport(std::string_view projectRoot = "") const;
     void printSummary() const;
     void printJson() const;
 

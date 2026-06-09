@@ -45,22 +45,74 @@ void Reporter::addFindingLocked(FindingKind kind, std::string_view file,
         ++rewrite_count_;
 }
 
-void Reporter::printReport() const {
-    for (const auto &f : findings_) {
-        auto label = (f.action == FindingAction::Flag)
-            ? std::string_view("FLAG")
-            : kindLabel(f.kind);
-        llvm::outs() << llvm::format("[%-5s] ", label.data())
-                      << f.file << ":" << f.line << ":" << f.col << "  "
-                      << f.old_text << " -> "
-                      << (f.action == FindingAction::Flag ? "(manual review) " : "")
-                      << f.new_text << "\n";
+static std::string_view shortenPath(std::string_view path,
+                                    std::string_view root) {
+    if (!root.empty() && path.starts_with(root)) {
+        path.remove_prefix(root.size());
+        if (!path.empty() && path[0] == '/')
+            path.remove_prefix(1);
+    }
+    return path;
+}
+
+void Reporter::printReport(std::string_view projectRoot) const {
+    if (findings_.empty())
+        return;
+
+    bool hasFlags = flag_count_ > 0;
+    bool hasRewrites = rewrite_count_ > 0;
+
+    if (hasFlags) {
+        llvm::outs() << "Manual review needed:\n";
+        for (const auto &f : findings_) {
+            if (f.action != FindingAction::Flag)
+                continue;
+            auto path = shortenPath(f.file, projectRoot);
+            bool skipped = f.new_text.find("skipped region") != std::string::npos;
+            llvm::outs() << "  " << path << ":" << f.line
+                         << "  " << f.old_text;
+            if (skipped)
+                llvm::outs() << " (#ifdef)";
+            llvm::outs() << "\n";
+        }
+    }
+
+    if (hasRewrites) {
+        llvm::outs() << "\nAuto-rewritable (" << rewrite_count_ << "):\n";
+        std::map<FindingKind, unsigned> byKind;
+        for (const auto &f : findings_)
+            if (f.action == FindingAction::Rewrite)
+                ++byKind[f.kind];
+        auto desc = [](FindingKind k) -> const char * {
+            switch (k) {
+            case FindingKind::Include:        return "includes";
+            case FindingKind::Macro:          return "macros";
+            case FindingKind::Type:           return "types";
+            case FindingKind::ScalarType:     return "scalar types";
+            case FindingKind::DataPtr:        return "data_ptr";
+            case FindingKind::CudaStream:     return "CUDA streams";
+            case FindingKind::DeviceGuard:    return "device guards";
+            case FindingKind::MethodToFunc:   return "method → function";
+            case FindingKind::FreeFunc:       return "free functions";
+            default:                          return "other";
+            }
+        };
+        for (const auto &[kind, count] : byKind)
+            llvm::outs() << "  " << count << " " << desc(kind) << "\n";
     }
 }
 
 void Reporter::printSummary() const {
+    auto total = rewrite_count_ + flag_count_;
+    if (total == 0) {
+        llvm::outs() << "\nNo unstable API usage found.\n";
+        return;
+    }
     llvm::outs() << "\nSummary: " << rewrite_count_ << " auto-rewritable, "
-                 << flag_count_ << " flagged for manual review\n";
+                 << flag_count_ << " flagged for manual review";
+    if (rewrite_count_ > 0 && flag_count_ == 0)
+        llvm::outs() << " — ready for --mode=rewrite";
+    llvm::outs() << "\n";
 }
 
 void Reporter::printJson() const {
@@ -179,8 +231,12 @@ std::string_view Reporter::kindLabel(FindingKind kind) {
         return "M2F";
     case FindingKind::FreeFunc:
         return "FUNC";
-    case FindingKind::Flag:
-        return "FLAG";
+    case FindingKind::UnstableType:
+        return "UTYPE";
+    case FindingKind::UnstableRef:
+        return "UREF";
+    case FindingKind::UnstableMethod:
+        return "UMETH";
     }
     return "?????";
 }
