@@ -1085,7 +1085,7 @@ static void addUnstableMethodCallCatchAll(std::vector<RewriteRule> &rules,
         std::string msg = "." + methodName + "() has no stable ABI equivalent";
         if (inMacroBody) msg += " (inside macro body)";
 
-        rep.addFinding(FindingKind::Flag, SM, spelling,
+        rep.addFinding(FindingKind::UnstableMethod, SM, spelling,
                        text, msg, FindingAction::Flag);
         return noEdits();
     };
@@ -1129,7 +1129,7 @@ static void addUnstableTypeCatchAll(std::vector<RewriteRule> &rules,
             : getSourceText(TL->getSourceRange(), SM, R.Context->getLangOpts());
         std::string msg = "no stable equivalent — rewrite or remove " + qualName;
         if (inMacroBody) msg += " (inside macro body)";
-        rep.addFinding(FindingKind::Flag, SM, spelling,
+        rep.addFinding(FindingKind::UnstableType, SM, spelling,
                        text, msg, FindingAction::Flag);
         return noEdits();
     };
@@ -1175,7 +1175,7 @@ static void addUnstableRefCatchAll(std::vector<RewriteRule> &rules,
             : getSourceText(DRE->getSourceRange(), SM, R.Context->getLangOpts());
         std::string msg = "no stable equivalent — rewrite or remove " + qualName;
         if (inMacroBody) msg += " (inside macro body)";
-        rep.addFinding(FindingKind::Flag, SM, spelling,
+        rep.addFinding(FindingKind::UnstableRef, SM, spelling,
                        text, msg, FindingAction::Flag);
         return noEdits();
     };

@@ -294,4 +294,81 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
     }
 }
 
+static const std::vector<std::string> &getSkippedRegionPatterns() {
+    static const auto patterns = [] {
+        std::set<std::string> unique;
+        for (const auto &r : kTypeRules)
+            if (!r.from.empty()) unique.insert(std::string(r.from));
+        for (const auto &r : kMacroRules)
+            unique.insert(std::string(r.from));
+        for (const auto &r : kComparisonMacroRules)
+            unique.insert(std::string(r.name));
+        for (const auto &r : kDispatchConvRules)
+            unique.insert(std::string(r.old_name));
+        for (const auto &r : kFreeFuncRules)
+            unique.insert(std::string(r.from));
+        for (const auto &r : kMethodToFreeFuncRules)
+            unique.insert("." + std::string(r.from) + "(");
+        for (const auto &r : kMethodRenameRules)
+            unique.insert("." + std::string(r.from) + "(");
+        for (const auto &r : kNamespaceRules)
+            unique.insert(std::string(r.from));
+        // data_ptr<T>() is the one method with a template arg — .data_ptr( won't match
+        unique.insert(".data_ptr<");
+        std::vector<std::string> result(unique.begin(), unique.end());
+        std::sort(result.begin(), result.end(),
+                  [](const auto &a, const auto &b) { return a.size() > b.size(); });
+        return result;
+    }();
+    return patterns;
+}
+
+void PreprocessorCallbacks::SourceRangeSkipped(clang::SourceRange Range,
+                                               clang::SourceLocation EndifLoc) {
+    auto begin = SM_.getSpellingLoc(Range.getBegin());
+    if (!isInProjectScope(SM_, begin, project_root_))
+        return;
+
+    auto end = SM_.getSpellingLoc(Range.getEnd());
+    if (SM_.getFileID(begin) != SM_.getFileID(end))
+        return;
+
+    auto startLine = SM_.getSpellingLineNumber(begin);
+    auto endLine = SM_.getSpellingLineNumber(end);
+    if (endLine - startLine < 5)
+        return;
+
+    bool invalid = false;
+    auto text = SM_.getCharacterData(begin, &invalid);
+    if (invalid)
+        return;
+    auto endPtr = SM_.getCharacterData(end, &invalid);
+    if (invalid || endPtr <= text)
+        return;
+
+    std::string_view skipped(text, static_cast<size_t>(endPtr - text));
+    auto filename = SM_.getFilename(begin);
+    const auto &patterns = getSkippedRegionPatterns();
+
+    unsigned line = startLine;
+    size_t pos = 0;
+    while (pos < skipped.size()) {
+        auto nl = skipped.find('\n', pos);
+        auto lineText = skipped.substr(pos, nl == std::string_view::npos ? nl : nl - pos);
+
+        for (const auto &p : patterns) {
+            if (lineText.find(p) != std::string_view::npos) {
+                reporter_.addFinding(
+                    FindingKind::UnstableRef, filename, line, 0,
+                    p, p + " (in preprocessor-skipped region)",
+                    FindingAction::Flag);
+                break;
+            }
+        }
+
+        ++line;
+        pos = (nl == std::string_view::npos) ? skipped.size() : nl + 1;
+    }
+}
+
 } // namespace stable_abi
