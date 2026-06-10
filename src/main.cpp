@@ -471,7 +471,7 @@ static int runWithConfig(stable_abi::Config &cfg,
     if (json) {
         reporter.printJson();
     } else {
-        reporter.printReport();
+        reporter.printReport(projectRoot);
         reporter.printSummary();
     }
     reporter.printParseWarnings();

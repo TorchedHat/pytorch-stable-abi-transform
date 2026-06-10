@@ -44,6 +44,9 @@ public:
 
     void finalizeIncludes();
 
+    void SourceRangeSkipped(clang::SourceRange Range,
+                            clang::SourceLocation EndifLoc) override;
+
 private:
     struct PendingInclude {
         std::string containingFile;

@@ -430,7 +430,7 @@ catchall_out=$("$TOOL" --mode=audit --format=json "$CATCHALL_INPUT" "${COMMON_AR
 catchall_flags=$(echo "$catchall_out" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-print(sum(1 for f in d['findings'] if f['kind'] == 'FLAG'))
+print(sum(1 for f in d['findings'] if f['kind'] in ('UTYPE', 'UREF')))
 ")
 if [ "$catchall_flags" -ge 2 ]; then
     echo "PASS  catch-all: $catchall_flags unknown unstable APIs flagged"
@@ -455,7 +455,7 @@ methcatch_out=$("$TOOL" --mode=audit --format=json "$METHCATCH_INPUT" "${COMMON_
 methcatch_flags=$(echo "$methcatch_out" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-flags = [f for f in d['findings'] if f['kind'] == 'FLAG' and 'no stable ABI equivalent' in f['new']]
+flags = [f for f in d['findings'] if f['kind'] == 'UMETH']
 print(len(flags))
 ")
 if [ "$methcatch_flags" -eq 2 ]; then
@@ -464,6 +464,51 @@ if [ "$methcatch_flags" -eq 2 ]; then
 else
     echo "FAIL  method-catch-all: expected 2 flags, got $methcatch_flags"
     echo "$methcatch_out" | python3 -m json.tool 2>/dev/null | head -30
+    comp_failed=$((comp_failed + 1))
+fi
+
+# ifdef auto-reparse: finds unstable API inside #ifdef blocks
+IFDEF_INPUT="$WORK_DIR/ifdef_reparse.cpp"
+cat > "$IFDEF_INPUT" << 'IFDEFEOF'
+#include <ATen/ATen.h>
+
+void always_visible(at::Tensor& t) {
+    auto x = t.clone();
+}
+
+#ifdef SOME_TEST_FLAG
+void conditionally_visible(at::Tensor& t) {
+    TORCH_CHECK(t.dim() > 0, "bad");
+    auto y = t.clone();
+    float* p = t.data_ptr<float>();
+    auto z = t.contiguous();
+    auto n = t.numel();
+    auto s = t.sizes();
+    auto d = t.device();
+    auto sc = t.scalar_type();
+    (void)p; (void)z; (void)n; (void)s; (void)d; (void)sc;
+    (void)y;
+}
+#endif
+IFDEFEOF
+
+ifdef_out=$("$TOOL" --mode=audit --format=json "$IFDEF_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+ifdef_check=$(echo "$ifdef_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+incl = sum(1 for f in d['findings'] if f['kind'] == 'INCL')
+skipped = sum(1 for f in d['findings'] if 'skipped region' in f.get('new',''))
+print(f'{incl} {skipped} {len(d[\"findings\"])}')
+")
+ifdef_incl=$(echo "$ifdef_check" | cut -d' ' -f1)
+ifdef_skipped=$(echo "$ifdef_check" | cut -d' ' -f2)
+ifdef_total=$(echo "$ifdef_check" | cut -d' ' -f3)
+if [ "$ifdef_incl" -eq 1 ] && [ "$ifdef_skipped" -ge 2 ]; then
+    echo "PASS  ifdef-skipped-scan: $ifdef_skipped findings in skipped regions, include not double-counted"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  ifdef-skipped-scan: incl=$ifdef_incl (want 1), skipped=$ifdef_skipped (want >= 2)"
+    echo "$ifdef_out" | python3 -m json.tool 2>/dev/null | head -30
     comp_failed=$((comp_failed + 1))
 fi
 
