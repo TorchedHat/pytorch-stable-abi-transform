@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rules.h"
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/Expr.h>
 #include <clang/Basic/SourceManager.h>
@@ -130,6 +131,39 @@ inline std::string jsonEscape(std::string_view s) {
         }
     }
     return out;
+}
+
+inline const std::vector<std::string> &getUnstablePatterns() {
+    static const auto patterns = [] {
+        std::set<std::string> unique;
+        for (const auto &r : kTypeRules)
+            if (!r.from.empty())
+                unique.insert(std::string(r.from));
+        for (const auto &r : kMacroRules)
+            unique.insert(std::string(r.from));
+        for (const auto &r : kComparisonMacroRules)
+            unique.insert(std::string(r.name));
+        for (const auto &r : kDispatchConvRules)
+            unique.insert(std::string(r.old_name));
+        for (const auto &r : kFreeFuncRules)
+            unique.insert(std::string(r.from));
+        for (const auto &r : kMethodToFreeFuncRules) {
+            unique.insert("." + std::string(r.from) + "(");
+            unique.insert("." + std::string(r.from) + "<");
+        }
+        for (const auto &r : kMethodRenameRules) {
+            unique.insert("." + std::string(r.from) + "(");
+            unique.insert("." + std::string(r.from) + "<");
+        }
+        for (const auto &r : kNamespaceRules)
+            unique.insert(std::string(r.from));
+        std::vector<std::string> result(unique.begin(), unique.end());
+        std::sort(
+            result.begin(), result.end(),
+            [](const auto &a, const auto &b) { return a.size() > b.size(); });
+        return result;
+    }();
+    return patterns;
 }
 
 } // namespace stable_abi

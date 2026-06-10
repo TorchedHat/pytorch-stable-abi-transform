@@ -497,7 +497,7 @@ ifdef_check=$(echo "$ifdef_out" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 incl = sum(1 for f in d['findings'] if f['kind'] == 'INCL')
-skipped = sum(1 for f in d['findings'] if 'skipped region' in f.get('new',''))
+skipped = sum(1 for f in d['findings'] if 'not analyzed by AST' in f.get('new',''))
 print(f'{incl} {skipped} {len(d[\"findings\"])}')
 ")
 ifdef_incl=$(echo "$ifdef_check" | cut -d' ' -f1)
@@ -509,6 +509,93 @@ if [ "$ifdef_incl" -eq 1 ] && [ "$ifdef_skipped" -ge 2 ]; then
 else
     echo "FAIL  ifdef-skipped-scan: incl=$ifdef_incl (want 1), skipped=$ifdef_skipped (want >= 2)"
     echo "$ifdef_out" | python3 -m json.tool 2>/dev/null | head -30
+    comp_failed=$((comp_failed + 1))
+fi
+
+# String literal: TORCH_CHECK inside a code generator string is flagged
+STRLIT_INPUT="$WORK_DIR/string_literal.cpp"
+cat > "$STRLIT_INPUT" << 'STRLITEOF'
+#include <ATen/ATen.h>
+
+const char* codegen = "TORCH_CHECK(x, msg)";
+
+void f(at::Tensor& t) {
+    auto x = t.clone();
+}
+STRLITEOF
+
+strlit_out=$("$TOOL" --mode=audit --format=json "$STRLIT_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+strlit_check=$(echo "$strlit_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+ast_flags = sum(1 for f in d['findings'] if 'not analyzed by AST' in f.get('new',''))
+print(ast_flags)
+")
+if [ "$strlit_check" -ge 1 ]; then
+    echo "PASS  string-literal-scan: TORCH_CHECK in string flagged"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  string-literal-scan: expected >= 1 flag in string literal"
+    echo "$strlit_out" | python3 -m json.tool 2>/dev/null | head -20
+    comp_failed=$((comp_failed + 1))
+fi
+
+# Comment: unstable API in comment is flagged
+COMMENT_INPUT="$WORK_DIR/comment_scan.cpp"
+cat > "$COMMENT_INPUT" << 'COMMENTEOF'
+#include <ATen/ATen.h>
+
+// This used to be at::Tensor before migration
+void f(torch::stable::Tensor& t) {
+    auto x = t.dim();
+}
+COMMENTEOF
+
+comment_out=$("$TOOL" --mode=audit --format=json "$COMMENT_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+comment_check=$(echo "$comment_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+comment_flags = [f for f in d['findings'] if f['line'] == 3 and 'not analyzed by AST' in f.get('new','')]
+print(len(comment_flags))
+")
+if [ "$comment_check" -ge 1 ]; then
+    echo "PASS  comment-scan: at::Tensor in comment flagged"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  comment-scan: expected flag on comment line"
+    echo "$comment_out" | python3 -m json.tool 2>/dev/null | head -20
+    comp_failed=$((comp_failed + 1))
+fi
+
+# No double-counting: AST-covered lines should not get text-scan duplicates
+DEDUP_INPUT="$WORK_DIR/dedup_scan.cpp"
+cat > "$DEDUP_INPUT" << 'DEDUPEOF'
+#include <ATen/ATen.h>
+
+void f(at::Tensor& t) {
+    auto x = t.clone();
+}
+DEDUPEOF
+
+dedup_out=$("$TOOL" --mode=audit --format=json "$DEDUP_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+dedup_check=$(echo "$dedup_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+# Line 3 has at::Tensor — AST should find it, text scan should not duplicate
+line3 = [f for f in d['findings'] if f['line'] == 3]
+ast_only = all('not analyzed by AST' not in f.get('new','') for f in line3)
+has_finding = len(line3) > 0
+print(f'{has_finding} {ast_only} {len(line3)}')
+")
+dedup_found=$(echo "$dedup_check" | cut -d' ' -f1)
+dedup_ast_only=$(echo "$dedup_check" | cut -d' ' -f2)
+dedup_count=$(echo "$dedup_check" | cut -d' ' -f3)
+if [ "$dedup_found" = "True" ] && [ "$dedup_ast_only" = "True" ]; then
+    echo "PASS  no-double-count: line 3 has $dedup_count finding(s), all from AST"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  no-double-count: found=$dedup_found ast_only=$dedup_ast_only count=$dedup_count"
+    echo "$dedup_out" | python3 -m json.tool 2>/dev/null | head -20
     comp_failed=$((comp_failed + 1))
 fi
 
