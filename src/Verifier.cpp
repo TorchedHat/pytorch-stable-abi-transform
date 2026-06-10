@@ -3,10 +3,10 @@
 #include <clang/Frontend/FrontendActions.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+#include <fstream>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
-#include <fstream>
 #include <regex>
 #include <vector>
 
@@ -17,11 +17,13 @@ namespace stable_abi {
 // ---------------------------------------------------------------------------
 
 class ShadowIncludeTree {
-public:
+  public:
     explicit ShadowIncludeTree(const std::string &pytorch_root) {
         llvm::SmallString<128> tmp;
-        if (auto ec = llvm::sys::fs::createUniqueDirectory("stable-abi-verify", tmp)) {
-            llvm::errs() << "warning: failed to create shadow tree: " << ec.message() << "\n";
+        if (auto ec = llvm::sys::fs::createUniqueDirectory("stable-abi-verify",
+                                                           tmp)) {
+            llvm::errs() << "warning: failed to create shadow tree: "
+                         << ec.message() << "\n";
             return;
         }
         root_ = std::string(tmp);
@@ -34,11 +36,13 @@ public:
         createSymlink(pytorch_root + "/torch/csrc/inductor/aoti_torch/c",
                       root_ + "/torch/csrc/inductor/aoti_torch/c");
         mkpath("torch/csrc/inductor/aoti_torch/generated");
-        createSymlink(pytorch_root + "/torch/csrc/inductor/aoti_torch/generated",
+        createSymlink(pytorch_root +
+                          "/torch/csrc/inductor/aoti_torch/generated",
                       root_ + "/torch/csrc/inductor/aoti_torch/generated");
 
         mkpath("torch");
-        std::string headeronly_src = pytorch_root + "/torch/include/torch/headeronly";
+        std::string headeronly_src =
+            pytorch_root + "/torch/include/torch/headeronly";
         if (!llvm::sys::fs::is_directory(headeronly_src))
             headeronly_src = pytorch_root + "/torch/headeronly";
         createSymlink(headeronly_src, root_ + "/torch/headeronly");
@@ -64,7 +68,7 @@ public:
 
     const std::string &path() const { return root_; }
 
-private:
+  private:
     std::string root_;
     std::vector<std::string> symlinks_;
 
@@ -82,7 +86,8 @@ private:
         llvm::SmallString<256> p(root_);
         llvm::sys::path::append(p, rel);
         if (auto ec = llvm::sys::fs::create_directories(p))
-            llvm::errs() << "warning: mkdir " << p << ": " << ec.message() << "\n";
+            llvm::errs() << "warning: mkdir " << p << ": " << ec.message()
+                         << "\n";
     }
 
     void createSymlink(const std::string &target, const std::string &link) {
@@ -100,7 +105,7 @@ private:
 // ---------------------------------------------------------------------------
 
 class StableAbiDiagConsumer : public clang::DiagnosticConsumer {
-public:
+  public:
     explicit StableAbiDiagConsumer(std::vector<Violation> &out)
         : violations_(out) {}
 
@@ -126,13 +131,14 @@ public:
         llvm::SmallString<256> msg;
         info.FormatDiagnostic(msg);
 
-        std::string reason =
-            (level == clang::DiagnosticsEngine::Fatal) ? "fatal error" : "error";
+        std::string reason = (level == clang::DiagnosticsEngine::Fatal)
+                                 ? "fatal error"
+                                 : "error";
 
         violations_.push_back({file, line, col, msg.str().str(), reason});
     }
 
-private:
+  private:
     std::vector<Violation> &violations_;
 };
 
@@ -146,7 +152,8 @@ std::vector<Violation> verifyStableAbi(const std::string &filepath,
 
     ShadowIncludeTree shadow(opts.pytorch_root);
     if (shadow.path().empty()) {
-        violations.push_back({filepath, 0, 0, "", "failed to create shadow include tree"});
+        violations.push_back(
+            {filepath, 0, 0, "", "failed to create shadow include tree"});
         return violations;
     }
 
@@ -176,8 +183,8 @@ std::vector<Violation> verifyStableAbi(const std::string &filepath,
         args.push_back("--cuda-host-only");
     }
 
-    auto db = std::make_unique<clang::tooling::FixedCompilationDatabase>(
-        ".", args);
+    auto db =
+        std::make_unique<clang::tooling::FixedCompilationDatabase>(".", args);
     std::vector<std::string> sources = {filepath};
 
     clang::tooling::ClangTool tool(*db, sources);
@@ -185,9 +192,8 @@ std::vector<Violation> verifyStableAbi(const std::string &filepath,
     StableAbiDiagConsumer diagConsumer(violations);
     tool.setDiagnosticConsumer(&diagConsumer);
 
-    tool.run(
-        clang::tooling::newFrontendActionFactory<clang::SyntaxOnlyAction>()
-            .get());
+    tool.run(clang::tooling::newFrontendActionFactory<clang::SyntaxOnlyAction>()
+                 .get());
 
     return violations;
 }
@@ -211,11 +217,10 @@ static const std::vector<ForbiddenPattern> &getForbiddenPatterns() {
          "unstable include: torch/cuda.h"},
         {std::regex(R"(#include\s*[<"]torch/library\.h[">])"),
          "unstable include: torch/library.h"},
-        {std::regex(R"(#include\s*[<"]ATen/)"),
-         "unstable include: ATen/"},
-        {std::regex(R"(#include\s*[<"]c10/)"),
-         "unstable include: c10/"},
-        {std::regex(R"(#include\s*[<"]torch/csrc/(?!stable/|inductor/aoti_torch/))"),
+        {std::regex(R"(#include\s*[<"]ATen/)"), "unstable include: ATen/"},
+        {std::regex(R"(#include\s*[<"]c10/)"), "unstable include: c10/"},
+        {std::regex(
+             R"(#include\s*[<"]torch/csrc/(?!stable/|inductor/aoti_torch/))"),
          "unstable include: torch/csrc/ (not stable or aoti)"},
         {std::regex(R"(\bat::Tensor\b)"),
          "unstable type: at::Tensor (use torch::stable::Tensor)"},
@@ -236,13 +241,16 @@ static const std::vector<ForbiddenPattern> &getForbiddenPatterns() {
         {std::regex(R"(\bat::k[A-Z]\w+\b)"),
          "unstable shorthand: at::k* (use torch::headeronly::ScalarType::*)"},
         {std::regex(R"(\btorch::k[A-Z]\w+\b)"),
-         "unstable shorthand: torch::k* (use torch::headeronly::ScalarType::*)"},
+         "unstable shorthand: torch::k* (use "
+         "torch::headeronly::ScalarType::*)"},
         {std::regex(R"(\bTORCH_CHECK\s*\()"),
          "unstable macro: TORCH_CHECK (use STD_TORCH_CHECK)"},
         {std::regex(R"(\bTORCH_CHECK_NOT_IMPLEMENTED\s*\()"),
-         "unstable macro: TORCH_CHECK_NOT_IMPLEMENTED (use STD_TORCH_CHECK_NOT_IMPLEMENTED)"},
+         "unstable macro: TORCH_CHECK_NOT_IMPLEMENTED (use "
+         "STD_TORCH_CHECK_NOT_IMPLEMENTED)"},
         {std::regex(R"(\bTORCH_CHECK_(EQ|NE|LT|GT|GE|LE)\s*\()"),
-         "unstable macro: TORCH_CHECK_EQ/NE/LT/GT/GE/LE (use STD_TORCH_CHECK with operator)"},
+         "unstable macro: TORCH_CHECK_EQ/NE/LT/GT/GE/LE (use STD_TORCH_CHECK "
+         "with operator)"},
         {std::regex(R"(\bTORCH_LIBRARY\s*\()"),
          "unstable macro: TORCH_LIBRARY (use STABLE_TORCH_LIBRARY)"},
         {std::regex(R"(\bTORCH_LIBRARY_EXPAND\s*\()"),
@@ -254,13 +262,15 @@ static const std::vector<ForbiddenPattern> &getForbiddenPatterns() {
         {std::regex(R"(\bAT_CUDA_CHECK\s*\()"),
          "unstable macro: AT_CUDA_CHECK (use STD_CUDA_CHECK)"},
         {std::regex(R"(\bC10_CUDA_KERNEL_LAUNCH_CHECK\s*\()"),
-         "unstable macro: C10_CUDA_KERNEL_LAUNCH_CHECK (use STD_CUDA_KERNEL_LAUNCH_CHECK)"},
+         "unstable macro: C10_CUDA_KERNEL_LAUNCH_CHECK (use "
+         "STD_CUDA_KERNEL_LAUNCH_CHECK)"},
         {std::regex(R"(\bat::cuda::)"),
          "unstable API: at::cuda:: (use torch::stable::accelerator::)"},
         {std::regex(R"(\bc10::cuda::)"),
          "unstable API: c10::cuda:: (use stable accelerator API)"},
         {std::regex(R"(\.data_ptr\s*[<(])"),
-         "unstable method: .data_ptr (use .mutable_data_ptr or .const_data_ptr)"},
+         "unstable method: .data_ptr (use .mutable_data_ptr or "
+         ".const_data_ptr)"},
         {std::regex(R"(\.dtype\s*\(\))"),
          "unstable method: .dtype() (use .scalar_type())"},
         {std::regex(R"(\bc10::optional\b)"),
@@ -268,15 +278,19 @@ static const std::vector<ForbiddenPattern> &getForbiddenPatterns() {
         {std::regex(R"(\bc10::nullopt\b)"),
          "unstable value: c10::nullopt (use std::nullopt)"},
         {std::regex(R"(\bc10::ArrayRef\b)"),
-         "unstable type: c10::ArrayRef (use torch::headeronly::HeaderOnlyArrayRef)"},
+         "unstable type: c10::ArrayRef (use "
+         "torch::headeronly::HeaderOnlyArrayRef)"},
         {std::regex(R"(\bc10::IntArrayRef\b)"),
-         "unstable type: c10::IntArrayRef (use torch::headeronly::IntHeaderOnlyArrayRef)"},
+         "unstable type: c10::IntArrayRef (use "
+         "torch::headeronly::IntHeaderOnlyArrayRef)"},
         {std::regex(R"(\bat::IntArrayRef\b)"),
-         "unstable type: at::IntArrayRef (use torch::headeronly::IntHeaderOnlyArrayRef)"},
+         "unstable type: at::IntArrayRef (use "
+         "torch::headeronly::IntHeaderOnlyArrayRef)"},
         {std::regex(R"(\bc10::string_view\b)"),
          "unstable type: c10::string_view (use std::string_view)"},
         {std::regex(R"(\btorch::TensorOptions\b)"),
-         "unstable type: torch::TensorOptions (decompose into scalar_type, layout, device args)"},
+         "unstable type: torch::TensorOptions (decompose into scalar_type, "
+         "layout, device args)"},
         {std::regex(R"(\bat::Half\b)"),
          "unstable type: at::Half (use torch::headeronly::Half)"},
         {std::regex(R"(\bc10::Half\b)"),
@@ -284,13 +298,16 @@ static const std::vector<ForbiddenPattern> &getForbiddenPatterns() {
         {std::regex(R"(\bc10::BFloat16\b)"),
          "unstable type: c10::BFloat16 (use torch::headeronly::BFloat16)"},
         {std::regex(R"(\bc10::Float8_e4m3fn\b)"),
-         "unstable type: c10::Float8_e4m3fn (use torch::headeronly::Float8_e4m3fn)"},
+         "unstable type: c10::Float8_e4m3fn (use "
+         "torch::headeronly::Float8_e4m3fn)"},
         {std::regex(R"(\bc10::Float8_e4m3fnuz\b)"),
-         "unstable type: c10::Float8_e4m3fnuz (use torch::headeronly::Float8_e4m3fnuz)"},
+         "unstable type: c10::Float8_e4m3fnuz (use "
+         "torch::headeronly::Float8_e4m3fnuz)"},
         {std::regex(R"(\bAT_DISPATCH_)"),
          "unstable macro: AT_DISPATCH_* (use THO_DISPATCH_*)"},
         {std::regex(R"(\bc10::CppTypeToScalarType\b)"),
-         "unstable type: c10::CppTypeToScalarType (use torch::headeronly::CppTypeToScalarType)"},
+         "unstable type: c10::CppTypeToScalarType (use "
+         "torch::headeronly::CppTypeToScalarType)"},
         {std::regex(R"(\bat::elementSize\b)"),
          "unstable function: at::elementSize (use tensor.element_size())"},
     };
@@ -346,8 +363,8 @@ std::vector<Violation> verifyStableAbiRegex(const std::string &filepath) {
         for (const auto &fp : getForbiddenPatterns()) {
             std::smatch match;
             if (std::regex_search(code, match, fp.pattern)) {
-                violations.push_back(
-                    {filepath, lineNo, 0, match[0].str(), std::string(fp.reason)});
+                violations.push_back({filepath, lineNo, 0, match[0].str(),
+                                      std::string(fp.reason)});
             }
         }
     }
@@ -361,18 +378,19 @@ std::vector<Violation> verifyStableAbiRegex(const std::string &filepath) {
 
 void printViolations(const std::vector<Violation> &violations) {
     if (violations.empty()) {
-        llvm::outs() << "ABI verification: PASS (no unstable API usage found)\n";
+        llvm::outs()
+            << "ABI verification: PASS (no unstable API usage found)\n";
         return;
     }
 
     llvm::outs() << "ABI verification: FAIL (" << violations.size()
-                  << " violations)\n";
+                 << " violations)\n";
     for (const auto &v : violations) {
         llvm::outs() << "  [UNSTABLE] " << v.file << ":" << v.line;
         if (v.col > 0)
             llvm::outs() << ":" << v.col;
         llvm::outs() << "  " << v.text << "\n"
-                      << "             " << v.reason << "\n";
+                     << "             " << v.reason << "\n";
     }
 }
 
@@ -381,10 +399,10 @@ void printViolationsJson(const std::vector<Violation> &violations) {
     for (size_t i = 0; i < violations.size(); ++i) {
         const auto &v = violations[i];
         llvm::outs() << "    {\"file\": \"" << jsonEscape(v.file) << "\", "
-                      << "\"line\": " << v.line << ", "
-                      << "\"col\": " << v.col << ", "
-                      << "\"text\": \"" << jsonEscape(v.text) << "\", "
-                      << "\"reason\": \"" << jsonEscape(v.reason) << "\"}";
+                     << "\"line\": " << v.line << ", "
+                     << "\"col\": " << v.col << ", "
+                     << "\"text\": \"" << jsonEscape(v.text) << "\", "
+                     << "\"reason\": \"" << jsonEscape(v.reason) << "\"}";
         if (i + 1 < violations.size())
             llvm::outs() << ",";
         llvm::outs() << "\n";

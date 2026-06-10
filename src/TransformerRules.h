@@ -7,24 +7,24 @@
 
 namespace stable_abi {
 
-[[nodiscard]] clang::transformer::RewriteRule buildTransformerRules(
-    Reporter &reporter, bool rewrite_mode,
-    const std::string &projectRoot = "");
+[[nodiscard]] clang::transformer::RewriteRule
+buildTransformerRules(Reporter &reporter, bool rewrite_mode,
+                      const std::string &projectRoot = "");
 
 class DeviceGuardCallback
     : public clang::ast_matchers::MatchFinder::MatchCallback {
-public:
+  public:
     DeviceGuardCallback(FileReplacements &fileRepls, Reporter &rep,
                         bool rewrite, const std::string &projectRoot = "")
         : file_repls_(fileRepls), reporter_(rep), rewrite_mode_(rewrite),
           project_root_(projectRoot) {}
 
-    void run(const clang::ast_matchers::MatchFinder::MatchResult &Result)
-        override;
+    void
+    run(const clang::ast_matchers::MatchFinder::MatchResult &Result) override;
 
     const std::string &getLastDeviceExpr() const { return last_device_expr_; }
 
-private:
+  private:
     FileReplacements &file_repls_;
     Reporter &reporter_;
     bool rewrite_mode_;
@@ -34,17 +34,17 @@ private:
 
 class CudaStreamCallback
     : public clang::ast_matchers::MatchFinder::MatchCallback {
-public:
-    CudaStreamCallback(FileReplacements &fileRepls, Reporter &rep,
-                        bool rewrite, const DeviceGuardCallback &guard_cb,
-                        const std::string &projectRoot = "")
+  public:
+    CudaStreamCallback(FileReplacements &fileRepls, Reporter &rep, bool rewrite,
+                       const DeviceGuardCallback &guard_cb,
+                       const std::string &projectRoot = "")
         : file_repls_(fileRepls), reporter_(rep), rewrite_mode_(rewrite),
           guard_cb_(guard_cb), project_root_(projectRoot) {}
 
-    void run(const clang::ast_matchers::MatchFinder::MatchResult &Result)
-        override;
+    void
+    run(const clang::ast_matchers::MatchFinder::MatchResult &Result) override;
 
-private:
+  private:
     FileReplacements &file_repls_;
     Reporter &reporter_;
     bool rewrite_mode_;

@@ -36,11 +36,14 @@ void DepGraph::build(const IncludeGraph &includes,
         q.push(start);
         visited.insert(start);
         while (!q.empty()) {
-            auto cur = q.front(); q.pop();
+            auto cur = q.front();
+            q.pop();
             auto it = canonIncludes.find(cur);
-            if (it == canonIncludes.end()) continue;
+            if (it == canonIncludes.end())
+                continue;
             for (const auto &next : it->second) {
-                if (visited.count(next)) continue;
+                if (visited.count(next))
+                    continue;
                 visited.insert(next);
                 if (nodes_.count(next))
                     edges_[start].insert(next);
@@ -53,9 +56,11 @@ void DepGraph::build(const IncludeGraph &includes,
 std::vector<std::vector<std::string>> DepGraph::partitions() const {
     std::map<std::string, std::set<std::string>> undirected;
     for (const auto &[from, tos] : edges_) {
-        if (!nodes_.count(from)) continue;
+        if (!nodes_.count(from))
+            continue;
         for (const auto &to : tos) {
-            if (!nodes_.count(to)) continue;
+            if (!nodes_.count(to))
+                continue;
             undirected[from].insert(to);
             undirected[to].insert(from);
         }
@@ -65,13 +70,15 @@ std::vector<std::vector<std::string>> DepGraph::partitions() const {
     std::vector<std::vector<std::string>> components;
 
     for (const auto &node : nodes_) {
-        if (visited.count(node)) continue;
+        if (visited.count(node))
+            continue;
         std::vector<std::string> component;
         std::queue<std::string> q;
         q.push(node);
         visited.insert(node);
         while (!q.empty()) {
-            auto cur = q.front(); q.pop();
+            auto cur = q.front();
+            q.pop();
             component.push_back(cur);
             for (const auto &neighbor : undirected[cur]) {
                 if (!visited.count(neighbor) && nodes_.count(neighbor)) {
@@ -101,10 +108,12 @@ std::map<size_t, std::set<size_t>> DepGraph::condensedDag(
 
     for (const auto &[from, tos] : edges_) {
         auto itFrom = fileToGroup.find(from);
-        if (itFrom == fileToGroup.end()) continue;
+        if (itFrom == fileToGroup.end())
+            continue;
         for (const auto &to : tos) {
             auto itTo = fileToGroup.find(to);
-            if (itTo == fileToGroup.end()) continue;
+            if (itTo == fileToGroup.end())
+                continue;
             if (itFrom->second != itTo->second)
                 dag[itFrom->second].insert(itTo->second);
         }
@@ -112,8 +121,9 @@ std::map<size_t, std::set<size_t>> DepGraph::condensedDag(
     return dag;
 }
 
-std::vector<std::vector<size_t>> DepGraph::topoRounds(
-    const std::map<size_t, std::set<size_t>> &dag, size_t n) const {
+std::vector<std::vector<size_t>>
+DepGraph::topoRounds(const std::map<size_t, std::set<size_t>> &dag,
+                     size_t n) const {
     std::map<size_t, size_t> inDegree;
     for (size_t i = 0; i < n; ++i)
         inDegree[i] = 0;
@@ -168,7 +178,8 @@ MigrationPlan DepGraph::computePlan() const {
             else
                 group.sources.push_back(file);
             auto it = findings_.find(file);
-            if (it == findings_.end()) continue;
+            if (it == findings_.end())
+                continue;
             for (const auto &f : it->second) {
                 ++group.api_counts[f.old_text];
                 ++group.total_findings;
@@ -253,10 +264,9 @@ void printMigrationPlan(const MigrationPlan &plan, bool json) {
                 llvm::outs() << static_cast<char>('A' + gid);
             else
                 llvm::outs() << gid;
-            llvm::outs() << " ("
-                         << g.file_count() << " file"
-                         << (g.file_count() != 1 ? "s" : "")
-                         << ", " << g.total_findings << " finding"
+            llvm::outs() << " (" << g.file_count() << " file"
+                         << (g.file_count() != 1 ? "s" : "") << ", "
+                         << g.total_findings << " finding"
                          << (g.total_findings != 1 ? "s" : "") << "):\n";
             for (const auto &f : g.sources)
                 llvm::outs() << "    " << f << "\n";
@@ -270,7 +280,8 @@ void printMigrationPlan(const MigrationPlan &plan, bool json) {
                 size_t k = 0;
                 for (const auto &[api, count] : g.api_counts) {
                     llvm::outs() << api << " (" << count << ")";
-                    if (++k < g.api_counts.size()) llvm::outs() << ", ";
+                    if (++k < g.api_counts.size())
+                        llvm::outs() << ", ";
                 }
                 llvm::outs() << "\n";
             }

@@ -76,7 +76,9 @@ def extract_file_pairs(repo: str, commit: str) -> tuple[list[FilePair], list[str
     """Extract before/after file pairs from a git commit."""
     result = subprocess.run(
         ["git", "diff", "--name-status", "-M10", f"{commit}^..{commit}"],
-        capture_output=True, text=True, cwd=repo,
+        capture_output=True,
+        text=True,
+        cwd=repo,
     )
     if result.returncode != 0:
         print(f"  git diff failed: {result.stderr.strip()}", file=sys.stderr)
@@ -129,10 +131,7 @@ def extract_file_pairs(repo: str, commit: str) -> tuple[list[FilePair], list[str
         if ext not in CPP_EXTENSIONS:
             continue
 
-        candidates = [
-            a for a in added
-            if Path(a).name == basename and "libtorch_stable" in a
-        ]
+        candidates = [a for a in added if Path(a).name == basename and "libtorch_stable" in a]
         if candidates:
             add_path = candidates[0]
             if Path(del_path).name in STRUCTURAL_BASENAMES:
@@ -150,20 +149,32 @@ def extract_file_content(repo: str, commit: str, path: str, which: str) -> str |
     ref = f"{commit}^" if which == "before" else commit
     result = subprocess.run(
         ["git", "show", f"{ref}:{path}"],
-        capture_output=True, text=True, cwd=repo,
+        capture_output=True,
+        text=True,
+        cwd=repo,
     )
     if result.returncode != 0:
         return None
     return result.stdout
 
 
-def run_audit(tool: str, filepath: str, resource_dir: str,
-              pytorch_dir: str, extra_includes: list[str],
-              timeout: int) -> tuple[list[Finding], bool, str]:
+def run_audit(
+    tool: str,
+    filepath: str,
+    resource_dir: str,
+    pytorch_dir: str,
+    extra_includes: list[str],
+    timeout: int,
+) -> tuple[list[Finding], bool, str]:
     """Run the tool in audit+json mode on a file. Returns (findings, success, error)."""
     cmd = [
-        tool, "--mode=audit", "--format=json", filepath, "--",
-        "-std=c++20", f"-resource-dir={resource_dir}",
+        tool,
+        "--mode=audit",
+        "--format=json",
+        filepath,
+        "--",
+        "-std=c++20",
+        f"-resource-dir={resource_dir}",
         f"-I{pytorch_dir}/torch/csrc/api/include",
         f"-I{pytorch_dir}",
         f"-I{pytorch_dir}/torch/include",
@@ -178,7 +189,10 @@ def run_audit(tool: str, filepath: str, resource_dir: str,
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return [], False, "timeout"
@@ -188,7 +202,7 @@ def run_audit(tool: str, filepath: str, resource_dir: str,
 
     if not stdout or not stdout.startswith("{"):
         # Tool produced no JSON — likely a parse failure
-        error_lines = [l for l in stderr.split("\n") if "error:" in l]
+        error_lines = [line for line in stderr.split("\n") if "error:" in line]
         short_error = error_lines[0] if error_lines else stderr[:200]
         return [], False, short_error
 
@@ -199,21 +213,30 @@ def run_audit(tool: str, filepath: str, resource_dir: str,
 
     findings = []
     for f in data.get("findings", []):
-        findings.append(Finding(
-            kind=f["kind"].strip(),
-            line=f["line"],
-            col=f["col"],
-            old=f["old"],
-            new=f["new"],
-            flag=f["flag"],
-        ))
+        findings.append(
+            Finding(
+                kind=f["kind"].strip(),
+                line=f["line"],
+                col=f["col"],
+                old=f["old"],
+                new=f["new"],
+                flag=f["flag"],
+            )
+        )
 
     return findings, True, ""
 
 
-def analyze_file(pair: FilePair, repo: str, commit: str,
-                 tool: str, resource_dir: str, pytorch_dir: str,
-                 extra_includes: list[str], timeout: int) -> FileAnalysis:
+def analyze_file(
+    pair: FilePair,
+    repo: str,
+    commit: str,
+    tool: str,
+    resource_dir: str,
+    pytorch_dir: str,
+    extra_includes: list[str],
+    timeout: int,
+) -> FileAnalysis:
     """Run audit on both before and after versions of a file."""
     analysis = FileAnalysis(pair=pair)
 
@@ -230,7 +253,12 @@ def analyze_file(pair: FilePair, repo: str, commit: str,
             f.write(before_content)
 
         analysis.before_findings, analysis.before_parse_ok, err = run_audit(
-            tool, before_file, resource_dir, pytorch_dir, extra_includes, timeout,
+            tool,
+            before_file,
+            resource_dir,
+            pytorch_dir,
+            extra_includes,
+            timeout,
         )
         if not analysis.before_parse_ok:
             analysis.error = err
@@ -248,7 +276,12 @@ def analyze_file(pair: FilePair, repo: str, commit: str,
             f.write(after_content)
 
         analysis.after_findings, analysis.after_parse_ok, err = run_audit(
-            tool, after_file, resource_dir, pytorch_dir, extra_includes, timeout,
+            tool,
+            after_file,
+            resource_dir,
+            pytorch_dir,
+            extra_includes,
+            timeout,
         )
         if not analysis.after_parse_ok:
             analysis.error = err
@@ -351,8 +384,12 @@ def print_file_analysis(a: FileAnalysis, verbose: bool) -> None:
     n_flag = sum(1 for f in a.before_findings if f.flag)
     n_after = len(a.after_findings)
 
-    tag = {"migrated": "MIGRATED", "untouched": "NOT MIGRATED",
-           "partial": "PARTIAL", "no-api": "no PyTorch API"}.get(cat, cat)
+    tag = {
+        "migrated": "MIGRATED",
+        "untouched": "NOT MIGRATED",
+        "partial": "PARTIAL",
+        "no-api": "no PyTorch API",
+    }.get(cat, cat)
 
     print(f"    {label}  [{tag}]")
     if cat == "no-api":
@@ -393,18 +430,21 @@ def print_report(pr_analyses: list[PRAnalysis], verbose: bool) -> None:
     all_files: list[FileAnalysis] = []
 
     for pr in pr_analyses:
-        print(f"\n=== PR #{pr.spec.pr_number} ({pr.spec.commit[:9]}): "
-              f"{pr.spec.description} ===")
+        print(f"\n=== PR #{pr.spec.pr_number} ({pr.spec.commit[:9]}): {pr.spec.description} ===")
 
         analyzed = [a for a in pr.files if a.before_parse_ok]
         failed = [a for a in pr.files if not a.before_parse_ok]
 
-        print(f"  Files: {len(analyzed)} analyzed, {len(failed)} parse failures, "
-              f"{len(pr.skipped_structural)} structural, "
-              f"{len(pr.skipped_non_cpp)} non-C++")
+        print(
+            f"  Files: {len(analyzed)} analyzed, {len(failed)} parse failures, "
+            f"{len(pr.skipped_structural)} structural, "
+            f"{len(pr.skipped_non_cpp)} non-C++"
+        )
 
         if pr.skipped_structural:
-            print(f"  Structural (skipped): {', '.join(Path(p).name for p in pr.skipped_structural)}")
+            print(
+                f"  Structural (skipped): {', '.join(Path(p).name for p in pr.skipped_structural)}"
+            )
 
         for a in pr.files:
             print_file_analysis(a, verbose)
@@ -414,20 +454,24 @@ def print_report(pr_analyses: list[PRAnalysis], verbose: bool) -> None:
     metrics = compute_metrics(all_files)
     cats = metrics["categories"]
     print(f"\n{'=' * 60}")
-    print(f"OVERALL SUMMARY")
+    print("OVERALL SUMMARY")
     print(f"{'=' * 60}")
-    print(f"  Files:")
+    print("  Files:")
     print(f"    Migrated (before→0):      {cats.get('migrated', 0)}")
     print(f"    Not migrated by PR:       {cats.get('untouched', 0)}")
     print(f"    Partial:                  {cats.get('partial', 0)}")
     print(f"    No PyTorch API (0/0):     {cats.get('no-api', 0)}")
     print(f"    Parse failures:           {cats.get('failed', 0)}")
     print()
-    print(f"  Migrated files ({cats.get('migrated', 0)} files, {metrics['migrated_total']} findings):")
+    print(
+        f"  Migrated files ({cats.get('migrated', 0)} files, {metrics['migrated_total']} findings):"
+    )
     print(f"    Auto-rewritable: {metrics['migrated_auto']}")
     print(f"    Flag-only:       {metrics['migrated_flag']}")
-    print(f"    Auto-fix rate:   {metrics['migrated_rate']:.1f}%"
-          f" ({metrics['migrated_auto']}/{metrics['migrated_total']})")
+    print(
+        f"    Auto-fix rate:   {metrics['migrated_rate']:.1f}%"
+        f" ({metrics['migrated_auto']}/{metrics['migrated_total']})"
+    )
     print()
     print(f"  All files ({metrics['all_total']} findings across all categories):")
     print(f"    Auto-rewritable: {metrics['all_auto']}")
@@ -435,7 +479,7 @@ def print_report(pr_analyses: list[PRAnalysis], verbose: bool) -> None:
     print(f"    Auto-fix rate:   {metrics['all_rate']:.1f}%")
 
     if metrics["flag_counter"]:
-        print(f"\n  TOP FLAG PATTERNS (opportunities for new auto-rewrite rules):")
+        print("\n  TOP FLAG PATTERNS (opportunities for new auto-rewrite rules):")
         for (kind, old), count in metrics["flag_counter"].most_common(15):
             print(f"    {count:3d}x {kind:5s}  {old}")
 
@@ -477,13 +521,25 @@ def write_json_report(pr_analyses: list[PRAnalysis], path: str) -> None:
                 "after_parse_ok": a.after_parse_ok,
                 "error": a.error,
                 "before_findings": [
-                    {"kind": f.kind, "line": f.line, "col": f.col,
-                     "old": f.old, "new": f.new, "flag": f.flag}
+                    {
+                        "kind": f.kind,
+                        "line": f.line,
+                        "col": f.col,
+                        "old": f.old,
+                        "new": f.new,
+                        "flag": f.flag,
+                    }
                     for f in a.before_findings
                 ],
                 "after_findings": [
-                    {"kind": f.kind, "line": f.line, "col": f.col,
-                     "old": f.old, "new": f.new, "flag": f.flag}
+                    {
+                        "kind": f.kind,
+                        "line": f.line,
+                        "col": f.col,
+                        "old": f.old,
+                        "new": f.new,
+                        "flag": f.flag,
+                    }
                     for f in a.after_findings
                 ],
             }
@@ -530,8 +586,7 @@ def main() -> int:
 
     pr_analyses: list[PRAnalysis] = []
     for pr in prs:
-        print(f"Processing PR #{pr.pr_number} ({pr.description})...",
-              file=sys.stderr)
+        print(f"Processing PR #{pr.pr_number} ({pr.description})...", file=sys.stderr)
 
         pairs, structural, non_cpp = extract_file_pairs(args.vllm_repo, pr.commit)
         analysis = PRAnalysis(
@@ -543,9 +598,14 @@ def main() -> int:
         for pair in pairs:
             print(f"  {Path(pair.before_path).name}...", file=sys.stderr, end="", flush=True)
             fa = analyze_file(
-                pair, args.vllm_repo, pr.commit,
-                tool, args.resource_dir, args.pytorch_dir,
-                extra_includes, args.timeout,
+                pair,
+                args.vllm_repo,
+                pr.commit,
+                tool,
+                args.resource_dir,
+                args.pytorch_dir,
+                extra_includes,
+                args.timeout,
             )
             status = "ok" if fa.before_parse_ok else "FAIL"
             print(f" {status}", file=sys.stderr)

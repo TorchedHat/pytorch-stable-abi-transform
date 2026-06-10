@@ -25,11 +25,11 @@ void PreprocessorCallbacks::InclusionDirective(
             includedFile.starts_with(project_root_)) {
             if (include_graph_mutex_) {
                 std::lock_guard<std::mutex> lock(*include_graph_mutex_);
-                (*include_graph_)[std::string(includingFile)]
-                    .insert(std::string(includedFile));
+                (*include_graph_)[std::string(includingFile)].insert(
+                    std::string(includedFile));
             } else {
-                (*include_graph_)[std::string(includingFile)]
-                    .insert(std::string(includedFile));
+                (*include_graph_)[std::string(includingFile)].insert(
+                    std::string(includedFile));
             }
         }
     }
@@ -62,26 +62,24 @@ void PreprocessorCallbacks::InclusionDirective(
 
         auto filename = SM_.getFilename(lineBegin);
         pending_includes_.push_back(
-            {std::string(filename), HashLoc, lineStart,
-             nextLineStart, &rule});
+            {std::string(filename), HashLoc, lineStart, nextLineStart, &rule});
         return;
     }
 
     emitted_includes_.insert(FileName.str());
 
-    if (FileName.starts_with("ATen/") ||
-        FileName.starts_with("c10/") ||
+    if (FileName.starts_with("ATen/") || FileName.starts_with("c10/") ||
         (FileName.starts_with("torch/") &&
          !FileName.starts_with("torch/csrc/stable/") &&
          !FileName.starts_with("torch/csrc/inductor/aoti_torch/") &&
          !FileName.starts_with("torch/headeronly/"))) {
         std::string includeText =
             std::string("#include <") + FileName.str() + ">";
-        reporter_.addFinding(FindingKind::Include, SM_, HashLoc,
-                             includeText,
-                             "unstable include — replace with stable equivalent "
-                             "or remove if unused",
-                             FindingAction::Flag);
+        reporter_.addFinding(
+            FindingKind::Include, SM_, HashLoc, includeText,
+            "unstable include — replace with stable equivalent "
+            "or remove if unused",
+            FindingAction::Flag);
     }
 }
 
@@ -127,8 +125,8 @@ void PreprocessorCallbacks::finalizeIncludes() {
             continue;
         }
 
-        reporter_.addFinding(FindingKind::Include, SM_, pi.hashLoc,
-                             oldInclude, replacement);
+        reporter_.addFinding(FindingKind::Include, SM_, pi.hashLoc, oldInclude,
+                             replacement);
         if (rewrite_mode_ && pi.nextLineStart.isValid()) {
             unsigned len = SM_.getFileOffset(pi.nextLineStart) -
                            SM_.getFileOffset(pi.lineStart);
@@ -173,10 +171,9 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
         return;
 
     if (name == "PYBIND11_MODULE") {
-        reporter_.addFinding(FindingKind::Macro, SM_, SM_.getSpellingLoc(loc),
-                             "PYBIND11_MODULE",
-                             "migrate to STABLE_TORCH_LIBRARY + TORCH_BOX",
-                             FindingAction::Flag);
+        reporter_.addFinding(
+            FindingKind::Macro, SM_, SM_.getSpellingLoc(loc), "PYBIND11_MODULE",
+            "migrate to STABLE_TORCH_LIBRARY + TORCH_BOX", FindingAction::Flag);
         return;
     }
 
@@ -194,30 +191,30 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
             auto end = start;
             while (tok->isNot(clang::tok::eof)) {
                 end = SM_.getSpellingLoc(tok->getLocation());
-                end = end.getLocWithOffset(tok->getLength());
+                end = end.getLocWithOffset(static_cast<int>(tok->getLength()));
                 ++tok;
             }
             return clang::Lexer::getSourceText(
-                       clang::CharSourceRange::getCharRange(start, end),
-                       SM_, lang_opts_)
+                       clang::CharSourceRange::getCharRange(start, end), SM_,
+                       lang_opts_)
                 .str();
         };
 
         std::string lhs = getArgText(0);
         std::string rhs = getArgText(1);
         if (lhs.empty() || rhs.empty()) {
-            reporter_.addFinding(FindingKind::Macro, SM_, loc,
-                                 cmp.name,
-                                 "could not extract arguments — rewrite manually",
-                                 FindingAction::Flag);
+            reporter_.addFinding(
+                FindingKind::Macro, SM_, loc, cmp.name,
+                "could not extract arguments — rewrite manually",
+                FindingAction::Flag);
             return;
         }
 
         std::string repl = "STD_TORCH_CHECK((" + lhs + ") " +
                            std::string(cmp.op) + " (" + rhs + "))";
 
-        reporter_.addFinding(FindingKind::Macro, SM_, loc,
-                             cmp.name, "STD_TORCH_CHECK");
+        reporter_.addFinding(FindingKind::Macro, SM_, loc, cmp.name,
+                             "STD_TORCH_CHECK");
         if (rewrite_mode_) {
             auto beginLoc = SM_.getSpellingLoc(MacroNameTok.getLocation());
             auto endLoc =
@@ -234,13 +231,13 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
             continue;
         std::string desc = std::string("THO_DISPATCH_V2(..., ") +
                            std::string(conv.type_collection) + ")";
-        reporter_.addFinding(FindingKind::Macro, SM_, loc,
-                             conv.old_name, desc);
+        reporter_.addFinding(FindingKind::Macro, SM_, loc, conv.old_name, desc);
         if (rewrite_mode_) {
             auto nameLen = MacroNameTok.getLength();
             addReplacement(file_repls_, SM_, loc, nameLen, "THO_DISPATCH_V2");
             auto closeParen = SM_.getSpellingLoc(Range.getEnd());
-            std::string insert = std::string(", ") + std::string(conv.type_collection);
+            std::string insert =
+                std::string(", ") + std::string(conv.type_collection);
             addReplacement(file_repls_, SM_, closeParen, 0, insert);
         }
         return;
@@ -248,8 +245,8 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
 
     // AT_ERROR(msg, ...) → STD_TORCH_CHECK(false, msg, ...)
     if (name == "AT_ERROR") {
-        reporter_.addFinding(FindingKind::Macro, SM_, loc,
-                             "AT_ERROR", "STD_TORCH_CHECK(false, ...)");
+        reporter_.addFinding(FindingKind::Macro, SM_, loc, "AT_ERROR",
+                             "STD_TORCH_CHECK(false, ...)");
         if (rewrite_mode_ && Args) {
             auto nameLen = MacroNameTok.getLength();
             addReplacement(file_repls_, SM_, loc, nameLen, "STD_TORCH_CHECK");
@@ -269,8 +266,7 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
         if (rule.flag_only) {
             std::string suggestion;
             if (!rule.to.empty()) {
-                suggestion =
-                    std::string("use ") + std::string(rule.to);
+                suggestion = std::string("use ") + std::string(rule.to);
             } else {
                 suggestion =
                     "no stable equivalent — rewrite with STD_TORCH_CHECK";
@@ -282,13 +278,11 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
         }
 
         reporter_.addFinding(FindingKind::Macro, SM_, loc,
-                             std::string(rule.from),
-                             std::string(rule.to));
+                             std::string(rule.from), std::string(rule.to));
 
         if (rewrite_mode_) {
             auto nameLen = MacroNameTok.getLength();
-            addReplacement(file_repls_, SM_, loc, nameLen,
-                           rule.to);
+            addReplacement(file_repls_, SM_, loc, nameLen, rule.to);
         }
         return;
     }
@@ -298,7 +292,8 @@ static const std::vector<std::string> &getSkippedRegionPatterns() {
     static const auto patterns = [] {
         std::set<std::string> unique;
         for (const auto &r : kTypeRules)
-            if (!r.from.empty()) unique.insert(std::string(r.from));
+            if (!r.from.empty())
+                unique.insert(std::string(r.from));
         for (const auto &r : kMacroRules)
             unique.insert(std::string(r.from));
         for (const auto &r : kComparisonMacroRules)
@@ -318,8 +313,9 @@ static const std::vector<std::string> &getSkippedRegionPatterns() {
         for (const auto &r : kNamespaceRules)
             unique.insert(std::string(r.from));
         std::vector<std::string> result(unique.begin(), unique.end());
-        std::sort(result.begin(), result.end(),
-                  [](const auto &a, const auto &b) { return a.size() > b.size(); });
+        std::sort(
+            result.begin(), result.end(),
+            [](const auto &a, const auto &b) { return a.size() > b.size(); });
         return result;
     }();
     return patterns;
@@ -356,14 +352,15 @@ void PreprocessorCallbacks::SourceRangeSkipped(clang::SourceRange Range,
     size_t pos = 0;
     while (pos < skipped.size()) {
         auto nl = skipped.find('\n', pos);
-        auto lineText = skipped.substr(pos, nl == std::string_view::npos ? nl : nl - pos);
+        auto lineText =
+            skipped.substr(pos, nl == std::string_view::npos ? nl : nl - pos);
 
         for (const auto &p : patterns) {
             if (lineText.find(p) != std::string_view::npos) {
-                reporter_.addFinding(
-                    FindingKind::UnstableRef, filename, line, 0,
-                    p, p + " (in preprocessor-skipped region)",
-                    FindingAction::Flag);
+                reporter_.addFinding(FindingKind::UnstableRef, filename, line,
+                                     0, p,
+                                     p + " (in preprocessor-skipped region)",
+                                     FindingAction::Flag);
                 break;
             }
         }

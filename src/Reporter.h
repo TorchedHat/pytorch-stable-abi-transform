@@ -39,7 +39,7 @@ struct Finding {
 };
 
 class Reporter {
-public:
+  public:
     void addFinding(FindingKind kind, const clang::SourceManager &SM,
                     clang::SourceLocation loc, std::string_view old_text,
                     std::string_view new_text,
@@ -60,16 +60,20 @@ public:
     [[nodiscard]] size_t rewriteCount() const { return rewrite_count_; }
     [[nodiscard]] size_t flagCount() const { return flag_count_; }
 
-    [[nodiscard]] bool hasNonIncludeFindingsForFile(std::string_view filename) const;
+    [[nodiscard]] bool
+    hasNonIncludeFindingsForFile(std::string_view filename) const;
 
-    [[nodiscard]] std::map<std::string, std::vector<Finding>> findingsByFile() const;
-    [[nodiscard]] const std::vector<Finding> &findings() const { return findings_; }
+    [[nodiscard]] std::map<std::string, std::vector<Finding>>
+    findingsByFile() const;
+    [[nodiscard]] const std::vector<Finding> &findings() const {
+        return findings_;
+    }
 
     void recordParseError(const std::string &file);
     [[nodiscard]] size_t parseErrorCount() const { return parse_error_count_; }
     void printParseWarnings() const;
 
-private:
+  private:
     std::vector<Finding> findings_;
     std::set<std::tuple<std::string, unsigned, unsigned, std::string>> seen_;
     size_t rewrite_count_ = 0;
@@ -78,9 +82,10 @@ private:
     std::map<std::string, size_t> parse_errors_by_file_;
     mutable std::mutex mutex_;
 
-    void addFindingLocked(FindingKind kind, std::string_view file, unsigned line,
-                          unsigned col, std::string_view old_text,
-                          std::string_view new_text, FindingAction action);
+    void addFindingLocked(FindingKind kind, std::string_view file,
+                          unsigned line, unsigned col,
+                          std::string_view old_text, std::string_view new_text,
+                          FindingAction action);
 
     static std::string_view kindLabel(FindingKind kind);
 };

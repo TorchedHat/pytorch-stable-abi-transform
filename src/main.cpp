@@ -3,6 +3,8 @@
 #include "StableAbiAction.h"
 #include "Verifier.h"
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <clang/Tooling/CommonOptionsParser.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
@@ -11,8 +13,6 @@
 #include <llvm/Support/Path.h>
 #include <llvm/Support/ThreadPool.h>
 #include <llvm/Support/Threading.h>
-#include <atomic>
-#include <chrono>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -25,68 +25,75 @@ static void printVersion(llvm::raw_ostream &OS) {
     OS << "stable-abi-transform " << TOOL_VERSION << "\n";
 }
 
-static llvm::cl::OptionCategory
-    ToolCategory("stable-abi-transform options");
+static llvm::cl::OptionCategory ToolCategory("stable-abi-transform options");
+
+static llvm::cl::opt<std::string> ModeOpt(
+    "mode",
+    llvm::cl::desc("Operating mode: audit (default), rewrite, verify, or plan"),
+    llvm::cl::init("audit"), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
-    ModeOpt("mode",
-            llvm::cl::desc("Operating mode: audit (default), rewrite, verify, or plan"),
-            llvm::cl::init("audit"), llvm::cl::cat(ToolCategory));
-
-static llvm::cl::opt<std::string>
-    FormatOpt("format",
-              llvm::cl::desc("Output format: text (default) or json"),
+    FormatOpt("format", llvm::cl::desc("Output format: text (default) or json"),
               llvm::cl::init("text"), llvm::cl::cat(ToolCategory));
 
-static llvm::cl::opt<std::string>
-    PytorchRoot("pytorch-root",
-                llvm::cl::desc("Path to PyTorch root, or \"auto\" to detect from pip-installed torch"),
-                llvm::cl::init(""), llvm::cl::cat(ToolCategory));
+static llvm::cl::opt<std::string> PytorchRoot(
+    "pytorch-root",
+    llvm::cl::desc(
+        "Path to PyTorch root, or \"auto\" to detect from pip-installed torch"),
+    llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
-static llvm::cl::list<std::string>
-    ExtraIncludes("extra-includes",
-                  llvm::cl::desc("Additional include paths for verification (project-specific headers)"),
-                  llvm::cl::cat(ToolCategory));
+static llvm::cl::list<std::string> ExtraIncludes(
+    "extra-includes",
+    llvm::cl::desc(
+        "Additional include paths for verification (project-specific headers)"),
+    llvm::cl::cat(ToolCategory));
 
-static llvm::cl::opt<std::string>
-    CudaInclude("cuda-include",
-                llvm::cl::desc("Path to CUDA include directory (default: auto-detect)"),
-                llvm::cl::init(""), llvm::cl::cat(ToolCategory));
+static llvm::cl::opt<std::string> CudaInclude(
+    "cuda-include",
+    llvm::cl::desc("Path to CUDA include directory (default: auto-detect)"),
+    llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
-static llvm::cl::opt<std::string>
-    VerifyMethodOpt("verify-method",
-                    llvm::cl::desc("Verification method: compile (default) or regex"),
-                    llvm::cl::init("compile"), llvm::cl::cat(ToolCategory));
+static llvm::cl::opt<std::string> VerifyMethodOpt(
+    "verify-method",
+    llvm::cl::desc("Verification method: compile (default) or regex"),
+    llvm::cl::init("compile"), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
     ProjectRoot("project-root",
-                llvm::cl::desc("Project root directory — rewrites files under this path (not just main file). "
-                               "Also auto-discovers .cpp/.cu source files when no transform targets given."),
+                llvm::cl::desc("Project root directory — rewrites files under "
+                               "this path (not just main file). "
+                               "Also auto-discovers .cpp/.cu source files when "
+                               "no transform targets given."),
                 llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
-static llvm::cl::opt<std::string>
-    OutputDir("output-dir",
-              llvm::cl::desc("Write transformed files to this directory instead of in-place"),
-              llvm::cl::init(""), llvm::cl::cat(ToolCategory));
+static llvm::cl::opt<std::string> OutputDir(
+    "output-dir",
+    llvm::cl::desc(
+        "Write transformed files to this directory instead of in-place"),
+    llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
     ConfigFile("config",
                llvm::cl::desc("Path to YAML config file (.stable-abi.yaml)"),
                llvm::cl::init(""), llvm::cl::cat(ToolCategory));
 
-static llvm::cl::opt<bool>
-    InitConfig("init-config",
-               llvm::cl::desc("Print an example .stable-abi.yaml config to stdout and exit"),
-               llvm::cl::init(false), llvm::cl::cat(ToolCategory));
+static llvm::cl::opt<bool> InitConfig(
+    "init-config",
+    llvm::cl::desc(
+        "Print an example .stable-abi.yaml config to stdout and exit"),
+    llvm::cl::init(false), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<bool>
     DryRun("dry-run",
-           llvm::cl::desc("Show unified diff of what --mode=rewrite would change, without modifying files"),
+           llvm::cl::desc("Show unified diff of what --mode=rewrite would "
+                          "change, without modifying files"),
            llvm::cl::init(false), llvm::cl::cat(ToolCategory));
 
-static llvm::cl::opt<unsigned>
-    Jobs("jobs", llvm::cl::desc("Number of parallel TU processing threads (0 = auto, 1 = sequential)"),
-         llvm::cl::init(0), llvm::cl::cat(ToolCategory));
+static llvm::cl::opt<unsigned> Jobs(
+    "jobs",
+    llvm::cl::desc(
+        "Number of parallel TU processing threads (0 = auto, 1 = sequential)"),
+    llvm::cl::init(0), llvm::cl::cat(ToolCategory));
 
 static std::string detectResourceDir() {
     llvm::SmallString<256> path(LLVM_INSTALL_PREFIX);
@@ -109,30 +116,38 @@ static std::string detectCudaInclude() {
 }
 
 static std::optional<Mode> parseMode(llvm::StringRef s) {
-    if (s == "audit") return Mode::Audit;
-    if (s == "rewrite") return Mode::Rewrite;
-    if (s == "verify") return Mode::Verify;
-    if (s == "plan") return Mode::Plan;
+    if (s == "audit")
+        return Mode::Audit;
+    if (s == "rewrite")
+        return Mode::Rewrite;
+    if (s == "verify")
+        return Mode::Verify;
+    if (s == "plan")
+        return Mode::Plan;
     return std::nullopt;
 }
 
 static std::optional<OutputFormat> parseFormat(llvm::StringRef s) {
-    if (s == "text") return OutputFormat::Text;
-    if (s == "json") return OutputFormat::Json;
+    if (s == "text")
+        return OutputFormat::Text;
+    if (s == "json")
+        return OutputFormat::Json;
     return std::nullopt;
 }
 
 static std::optional<VerifyMethod> parseVerifyMethod(llvm::StringRef s) {
-    if (s == "compile") return VerifyMethod::Compile;
-    if (s == "regex") return VerifyMethod::Regex;
+    if (s == "compile")
+        return VerifyMethod::Compile;
+    if (s == "regex")
+        return VerifyMethod::Regex;
     return std::nullopt;
 }
 
-static stable_abi::VerifyOptions buildVerifyOptions(
-    const std::string &resourceDir,
-    const std::string &pytorchRoot,
-    const std::vector<std::string> &extraIncludes,
-    const std::string &cudaInclude) {
+static stable_abi::VerifyOptions
+buildVerifyOptions(const std::string &resourceDir,
+                   const std::string &pytorchRoot,
+                   const std::vector<std::string> &extraIncludes,
+                   const std::string &cudaInclude) {
     stable_abi::VerifyOptions opts;
     opts.pytorch_root = pytorchRoot;
     opts.resource_dir = resourceDir;
@@ -147,14 +162,12 @@ static int runVerify(const std::vector<std::string> &sources,
                      const std::string &resourceDir,
                      const std::string &pytorchRoot,
                      const std::vector<std::string> &extraIncludes,
-                     const std::string &cudaInclude,
-                     VerifyMethod method,
-                     OutputFormat format,
-                     bool allow_fallback = false) {
+                     const std::string &cudaInclude, VerifyMethod method,
+                     OutputFormat format, bool allow_fallback = false) {
     bool use_compile = (method == VerifyMethod::Compile);
     bool json = (format == OutputFormat::Json);
-    auto opts = buildVerifyOptions(resourceDir, pytorchRoot,
-                                   extraIncludes, cudaInclude);
+    auto opts = buildVerifyOptions(resourceDir, pytorchRoot, extraIncludes,
+                                   cudaInclude);
 
     if (use_compile && opts.pytorch_root.empty()) {
         if (allow_fallback) {
@@ -164,17 +177,18 @@ static int runVerify(const std::vector<std::string> &sources,
                          << "      Pass --pytorch-root for compile-based "
                             "verification.\n";
         } else {
-            llvm::errs() << "error: --pytorch-root required for compile-based verification\n"
-                         << "       use --verify-method=regex for regex-based fallback\n";
+            llvm::errs() << "error: --pytorch-root required for compile-based "
+                            "verification\n"
+                         << "       use --verify-method=regex for regex-based "
+                            "fallback\n";
             return 1;
         }
     }
 
     size_t total_violations = 0;
     for (const auto &src : sources) {
-        auto violations = use_compile
-            ? stable_abi::verifyStableAbi(src, opts)
-            : stable_abi::verifyStableAbiRegex(src);
+        auto violations = use_compile ? stable_abi::verifyStableAbi(src, opts)
+                                      : stable_abi::verifyStableAbiRegex(src);
         if (json)
             stable_abi::printViolationsJson(violations);
         else
@@ -187,7 +201,9 @@ static int runVerify(const std::vector<std::string> &sources,
 static std::vector<std::string> discoverSources(llvm::StringRef root) {
     std::vector<std::string> result;
     std::error_code ec;
-    for (llvm::sys::fs::recursive_directory_iterator it(root, ec, /*follow_symlinks=*/false), end;
+    for (llvm::sys::fs::recursive_directory_iterator
+             it(root, ec, /*follow_symlinks=*/false),
+         end;
          it != end && !ec; it.increment(ec)) {
         auto path = it->path();
         auto ext = llvm::sys::path::extension(path);
@@ -198,8 +214,8 @@ static std::vector<std::string> discoverSources(llvm::StringRef root) {
     return result;
 }
 
-static std::vector<std::string> expandSources(
-    const std::vector<std::string> &entries) {
+static std::vector<std::string>
+expandSources(const std::vector<std::string> &entries) {
     std::set<std::string> seen;
     std::vector<std::string> result;
     for (const auto &entry : entries) {
@@ -269,8 +285,8 @@ static bool applyCliOverrides(stable_abi::Config &cfg) {
     if (CudaInclude.getNumOccurrences() > 0)
         cfg.cuda_include = CudaInclude.getValue();
     if (ExtraIncludes.getNumOccurrences() > 0)
-        cfg.extra_includes = std::vector<std::string>(
-            ExtraIncludes.begin(), ExtraIncludes.end());
+        cfg.extra_includes = std::vector<std::string>(ExtraIncludes.begin(),
+                                                      ExtraIncludes.end());
     if (OutputDir.getNumOccurrences() > 0)
         cfg.output_dir = OutputDir.getValue();
     if (Jobs.getNumOccurrences() > 0)
@@ -289,8 +305,9 @@ static bool validateSources(const std::vector<std::string> &sources) {
     return !missing;
 }
 
-static int runWithConfig(stable_abi::Config &cfg,
-                         clang::tooling::CompilationDatabase *externalDB = nullptr) {
+static int
+runWithConfig(stable_abi::Config &cfg,
+              clang::tooling::CompilationDatabase *externalDB = nullptr) {
     auto resourceDir = detectResourceDir();
 
     bool json = (cfg.format == OutputFormat::Json);
@@ -339,9 +356,9 @@ static int runWithConfig(stable_abi::Config &cfg,
     }
 
     auto writeMode = (cfg.mode == Mode::Rewrite)
-        ? (DryRun.getValue() ? stable_abi::WriteMode::DryRun
-                             : stable_abi::WriteMode::Rewrite)
-        : stable_abi::WriteMode::Audit;
+                         ? (DryRun.getValue() ? stable_abi::WriteMode::DryRun
+                                              : stable_abi::WriteMode::Rewrite)
+                         : stable_abi::WriteMode::Audit;
 
     std::unique_ptr<clang::tooling::FixedCompilationDatabase> ownedDB;
     clang::tooling::CompilationDatabase *db = externalDB;
@@ -368,33 +385,32 @@ static int runWithConfig(stable_abi::Config &cfg,
     }
 
     auto pytorchIncs = stable_abi::pytorchIncludePaths(cfg.pytorch_root);
-    auto argsAdjuster =
-        [&resourceDir, &pytorchIncs](
-            const clang::tooling::CommandLineArguments &Args,
-            llvm::StringRef Filename) {
-            clang::tooling::CommandLineArguments AdjustedArgs = Args;
-            if (Filename.ends_with(".cu"))
-                AdjustedArgs.push_back("--cuda-host-only");
-            if (Filename.ends_with(".cuh")) {
-                // .cuh triggers Clang's CUDA driver which creates
-                // device+host compilation pairs and fails with
-                // "expected exactly one compiler job". Force C++
-                // since we only analyze host-side API usage.
-                auto it = std::find(AdjustedArgs.begin(), AdjustedArgs.end(),
-                                    Filename.str());
-                if (it != AdjustedArgs.end())
-                    AdjustedArgs.insert(it, "-xc++");
-                else
-                    AdjustedArgs.push_back("-xc++");
-            }
-            if (!resourceDir.empty()) {
-                AdjustedArgs.push_back("-resource-dir");
-                AdjustedArgs.push_back(resourceDir);
-            }
-            for (const auto &inc : pytorchIncs)
-                AdjustedArgs.push_back("-I" + inc);
-            return AdjustedArgs;
-        };
+    auto argsAdjuster = [&resourceDir, &pytorchIncs](
+                            const clang::tooling::CommandLineArguments &Args,
+                            llvm::StringRef Filename) {
+        clang::tooling::CommandLineArguments AdjustedArgs = Args;
+        if (Filename.ends_with(".cu"))
+            AdjustedArgs.push_back("--cuda-host-only");
+        if (Filename.ends_with(".cuh")) {
+            // .cuh triggers Clang's CUDA driver which creates
+            // device+host compilation pairs and fails with
+            // "expected exactly one compiler job". Force C++
+            // since we only analyze host-side API usage.
+            auto it = std::find(AdjustedArgs.begin(), AdjustedArgs.end(),
+                                Filename.str());
+            if (it != AdjustedArgs.end())
+                AdjustedArgs.insert(it, "-xc++");
+            else
+                AdjustedArgs.push_back("-xc++");
+        }
+        if (!resourceDir.empty()) {
+            AdjustedArgs.push_back("-resource-dir");
+            AdjustedArgs.push_back(resourceDir);
+        }
+        for (const auto &inc : pytorchIncs)
+            AdjustedArgs.push_back("-I" + inc);
+        return AdjustedArgs;
+    };
 
     stable_abi::IncludeGraph includeGraph;
     std::mutex includeGraphMutex;
@@ -418,17 +434,16 @@ static int runWithConfig(stable_abi::Config &cfg,
         .include_graph_mutex = parallel ? &includeGraphMutex : nullptr,
         .write_mutex = parallel ? &writeMutex : nullptr,
     };
-    auto Factory = std::make_unique<stable_abi::StableAbiActionFactory>(
-        actionOpts);
+    auto Factory =
+        std::make_unique<stable_abi::StableAbiActionFactory>(actionOpts);
 
     int result;
     if (parallel) {
-        llvm::DefaultThreadPool pool(
-            llvm::hardware_concurrency(jobs));
+        llvm::DefaultThreadPool pool(llvm::hardware_concurrency(jobs));
         std::atomic<int> toolResult{0};
 
-        llvm::errs() << "note: processing " << sources.size()
-                     << " files with " << jobs << " threads\n";
+        llvm::errs() << "note: processing " << sources.size() << " files with "
+                     << jobs << " threads\n";
         auto t0 = std::chrono::steady_clock::now();
 
         for (const auto &source : sources) {
@@ -491,9 +506,9 @@ static int runWithConfig(stable_abi::Config &cfg,
                     verifySources.push_back(std::string(out));
             }
         }
-        int verify_result = runVerify(verifySources, resourceDir, cfg.pytorch_root,
-                                      cfg.extra_includes, cfg.cuda_include,
-                                      cfg.verify_method, cfg.format, true);
+        int verify_result = runVerify(
+            verifySources, resourceDir, cfg.pytorch_root, cfg.extra_includes,
+            cfg.cuda_include, cfg.verify_method, cfg.format, true);
         if (verify_result > 0) {
             if (!json)
                 llvm::outs() << "\nUnstable API references remain. "
@@ -518,9 +533,8 @@ static int runWithConfig(stable_abi::Config &cfg,
 int main(int argc, const char **argv) {
     llvm::cl::SetVersionPrinter(printVersion);
 
-    auto ExpectedParser =
-        clang::tooling::CommonOptionsParser::create(
-            argc, argv, ToolCategory, llvm::cl::ZeroOrMore);
+    auto ExpectedParser = clang::tooling::CommonOptionsParser::create(
+        argc, argv, ToolCategory, llvm::cl::ZeroOrMore);
 
     if (!ExpectedParser) {
         llvm::errs() << ExpectedParser.takeError();

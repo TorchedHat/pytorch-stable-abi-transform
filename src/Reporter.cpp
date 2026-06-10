@@ -21,9 +21,9 @@ void Reporter::addFinding(FindingKind kind, const clang::SourceManager &SM,
 }
 
 void Reporter::addFinding(FindingKind kind, std::string_view file,
-                           unsigned line, unsigned col,
-                           std::string_view old_text,
-                           std::string_view new_text, FindingAction action) {
+                          unsigned line, unsigned col,
+                          std::string_view old_text, std::string_view new_text,
+                          FindingAction action) {
     std::lock_guard<std::mutex> lock(mutex_);
     addFindingLocked(kind, file, line, col, old_text, new_text, action);
 }
@@ -31,13 +31,14 @@ void Reporter::addFinding(FindingKind kind, std::string_view file,
 void Reporter::addFindingLocked(FindingKind kind, std::string_view file,
                                 unsigned line, unsigned col,
                                 std::string_view old_text,
-                                std::string_view new_text, FindingAction action) {
-    if (!seen_.emplace(std::string(file), line, col, std::string(old_text)).second)
+                                std::string_view new_text,
+                                FindingAction action) {
+    if (!seen_.emplace(std::string(file), line, col, std::string(old_text))
+             .second)
         return;
 
-    findings_.push_back(
-        {kind, std::string(file), line, col, std::string(old_text),
-         std::string(new_text), action});
+    findings_.push_back({kind, std::string(file), line, col,
+                         std::string(old_text), std::string(new_text), action});
 
     if (action == FindingAction::Flag)
         ++flag_count_;
@@ -68,9 +69,9 @@ void Reporter::printReport(std::string_view projectRoot) const {
             if (f.action != FindingAction::Flag)
                 continue;
             auto path = shortenPath(f.file, projectRoot);
-            bool skipped = f.new_text.find("skipped region") != std::string::npos;
-            llvm::outs() << "  " << path << ":" << f.line
-                         << "  " << f.old_text;
+            bool skipped =
+                f.new_text.find("skipped region") != std::string::npos;
+            llvm::outs() << "  " << path << ":" << f.line << "  " << f.old_text;
             if (skipped)
                 llvm::outs() << " (#ifdef)";
             llvm::outs() << "\n";
@@ -85,16 +86,26 @@ void Reporter::printReport(std::string_view projectRoot) const {
                 ++byKind[f.kind];
         auto desc = [](FindingKind k) -> const char * {
             switch (k) {
-            case FindingKind::Include:        return "includes";
-            case FindingKind::Macro:          return "macros";
-            case FindingKind::Type:           return "types";
-            case FindingKind::ScalarType:     return "scalar types";
-            case FindingKind::DataPtr:        return "data_ptr";
-            case FindingKind::CudaStream:     return "CUDA streams";
-            case FindingKind::DeviceGuard:    return "device guards";
-            case FindingKind::MethodToFunc:   return "method → function";
-            case FindingKind::FreeFunc:       return "free functions";
-            default:                          return "other";
+            case FindingKind::Include:
+                return "includes";
+            case FindingKind::Macro:
+                return "macros";
+            case FindingKind::Type:
+                return "types";
+            case FindingKind::ScalarType:
+                return "scalar types";
+            case FindingKind::DataPtr:
+                return "data_ptr";
+            case FindingKind::CudaStream:
+                return "CUDA streams";
+            case FindingKind::DeviceGuard:
+                return "device guards";
+            case FindingKind::MethodToFunc:
+                return "method → function";
+            case FindingKind::FreeFunc:
+                return "free functions";
+            default:
+                return "other";
             }
         };
         for (const auto &[kind, count] : byKind)
@@ -127,7 +138,7 @@ void Reporter::printJson() const {
         llvm::outs() << "\"old\": \"" << jsonEscape(f.old_text) << "\", ";
         llvm::outs() << "\"new\": \"" << jsonEscape(f.new_text) << "\", ";
         llvm::outs() << "\"flag\": "
-                      << (f.action == FindingAction::Flag ? "true" : "false");
+                     << (f.action == FindingAction::Flag ? "true" : "false");
         llvm::outs() << "}";
         if (i + 1 < findings_.size())
             llvm::outs() << ",";
@@ -141,11 +152,13 @@ void Reporter::printJson() const {
     {
         size_t i = 0;
         for (const auto &[file, count] : parse_errors_by_file_) {
-            if (i++ > 0) llvm::outs() << ",";
+            if (i++ > 0)
+                llvm::outs() << ",";
             llvm::outs() << "\n    \"" << jsonEscape(file) << "\": " << count;
         }
     }
-    if (!parse_errors_by_file_.empty()) llvm::outs() << "\n  ";
+    if (!parse_errors_by_file_.empty())
+        llvm::outs() << "\n  ";
     llvm::outs() << "}\n";
     llvm::outs() << "}\n";
 }
@@ -176,9 +189,12 @@ void Reporter::printParseWarnings() const {
 void Reporter::sortFindings() {
     std::sort(findings_.begin(), findings_.end(),
               [](const Finding &a, const Finding &b) {
-                  if (a.file != b.file) return a.file < b.file;
-                  if (a.line != b.line) return a.line < b.line;
-                  if (a.col != b.col) return a.col < b.col;
+                  if (a.file != b.file)
+                      return a.file < b.file;
+                  if (a.line != b.line)
+                      return a.line < b.line;
+                  if (a.col != b.col)
+                      return a.col < b.col;
                   return a.old_text < b.old_text;
               });
 }
@@ -191,13 +207,14 @@ void Reporter::suppressRedundantFlags() {
 
     size_t removed = 0;
     auto it = std::remove_if(findings_.begin(), findings_.end(),
-        [&covered, &removed](const Finding &f) {
-            if (f.action == FindingAction::Flag && covered.count({f.file, f.line})) {
-                ++removed;
-                return true;
-            }
-            return false;
-        });
+                             [&covered, &removed](const Finding &f) {
+                                 if (f.action == FindingAction::Flag &&
+                                     covered.count({f.file, f.line})) {
+                                     ++removed;
+                                     return true;
+                                 }
+                                 return false;
+                             });
     findings_.erase(it, findings_.end());
     flag_count_ -= removed;
 }

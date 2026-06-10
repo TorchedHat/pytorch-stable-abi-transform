@@ -25,7 +25,8 @@ struct Config {
     unsigned jobs = 0;
 };
 
-[[nodiscard]] bool loadConfig(const std::string &path, Config &out, std::string &error);
+[[nodiscard]] bool loadConfig(const std::string &path, Config &out,
+                              std::string &error);
 void printExampleConfig();
 
 std::vector<std::string> pytorchIncludePaths(const std::string &root);
