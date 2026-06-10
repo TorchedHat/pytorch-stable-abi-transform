@@ -1,9 +1,9 @@
 #include "Config.h"
+#include <cstdio>
+#include <llvm/Support/FileSystem.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/Path.h>
-#include <llvm/Support/FileSystem.h>
 #include <llvm/Support/raw_ostream.h>
-#include <cstdio>
 
 namespace stable_abi {
 
@@ -69,10 +69,9 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
         while ((pos = s.find("${", pos)) != std::string::npos) {
             auto end = s.find('}', pos);
             if (end != std::string::npos) {
-                llvm::errs() << "warning: unexpanded variable in " << field
-                             << ": "
-                             << llvm::StringRef(s).substr(pos, end - pos + 1)
-                             << "\n";
+                llvm::errs()
+                    << "warning: unexpanded variable in " << field << ": "
+                    << llvm::StringRef(s).substr(pos, end - pos + 1) << "\n";
                 pos = end + 1;
             } else {
                 break;
@@ -104,10 +103,10 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
 }
 
 static std::string detectPytorchRoot() {
-    FILE *pipe = popen(
-        "python3 -c \"import torch, os; "
-        "print(os.path.join(torch.__path__[0], 'include'))\" 2>/dev/null",
-        "r");
+    FILE *pipe =
+        popen("python3 -c \"import torch, os; "
+              "print(os.path.join(torch.__path__[0], 'include'))\" 2>/dev/null",
+              "r");
     if (!pipe)
         return "";
     char buf[512];
@@ -144,15 +143,16 @@ bool resolvePytorchRoot(Config &cfg, std::string &error) {
                     "Install torch or set pytorch_root explicitly.";
             return false;
         }
-        llvm::errs() << "note: auto-detected pytorch_root: "
-                     << cfg.pytorch_root << "\n";
+        llvm::errs() << "note: auto-detected pytorch_root: " << cfg.pytorch_root
+                     << "\n";
     }
     if (!cfg.pytorch_root.empty()) {
         std::string stableDir = cfg.pytorch_root + "/torch/csrc/stable";
         if (!llvm::sys::fs::is_directory(stableDir)) {
             error = "pytorch_root does not contain stable ABI headers "
                     "(torch/csrc/stable/). Requires PyTorch >= 2.6. "
-                    "Path: " + cfg.pytorch_root;
+                    "Path: " +
+                    cfg.pytorch_root;
             return false;
         }
     }

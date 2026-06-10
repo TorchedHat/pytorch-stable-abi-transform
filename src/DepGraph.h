@@ -27,22 +27,22 @@ struct MigrationPlan {
 void printMigrationPlan(const MigrationPlan &plan, bool json);
 
 class DepGraph {
-public:
+  public:
     void build(const IncludeGraph &includes,
                std::map<std::string, std::vector<Finding>> fileFindings);
 
     MigrationPlan computePlan() const;
 
-private:
+  private:
     std::set<std::string> nodes_;
     std::map<std::string, std::set<std::string>> edges_;
     std::map<std::string, std::vector<Finding>> findings_;
 
     std::vector<std::vector<std::string>> partitions() const;
-    std::map<size_t, std::set<size_t>> condensedDag(
-        const std::vector<std::vector<std::string>> &parts) const;
-    std::vector<std::vector<size_t>> topoRounds(
-        const std::map<size_t, std::set<size_t>> &dag, size_t n) const;
+    std::map<size_t, std::set<size_t>>
+    condensedDag(const std::vector<std::vector<std::string>> &parts) const;
+    std::vector<std::vector<size_t>>
+    topoRounds(const std::map<size_t, std::set<size_t>> &dag, size_t n) const;
 };
 
 } // namespace stable_abi

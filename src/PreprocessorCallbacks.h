@@ -12,30 +12,25 @@
 namespace stable_abi {
 
 class PreprocessorCallbacks : public clang::PPCallbacks {
-public:
-    PreprocessorCallbacks(FileReplacements &fileRepls,
-                          Reporter &reporter, clang::SourceManager &SM,
-                          const clang::LangOptions &langOpts,
-                          bool rewrite_mode,
+  public:
+    PreprocessorCallbacks(FileReplacements &fileRepls, Reporter &reporter,
+                          clang::SourceManager &SM,
+                          const clang::LangOptions &langOpts, bool rewrite_mode,
                           const std::string &projectRoot = "",
                           IncludeGraph *includeGraph = nullptr,
                           std::mutex *includeGraphMutex = nullptr)
         : file_repls_(fileRepls), reporter_(reporter), SM_(SM),
-          lang_opts_(langOpts),
-          rewrite_mode_(rewrite_mode), project_root_(projectRoot),
-          include_graph_(includeGraph),
+          lang_opts_(langOpts), rewrite_mode_(rewrite_mode),
+          project_root_(projectRoot), include_graph_(includeGraph),
           include_graph_mutex_(includeGraphMutex) {}
 
-    void InclusionDirective(clang::SourceLocation HashLoc,
-                            const clang::Token &IncludeTok,
-                            llvm::StringRef FileName, bool IsAngled,
-                            clang::CharSourceRange FilenameRange,
-                            clang::OptionalFileEntryRef File,
-                            llvm::StringRef SearchPath,
-                            llvm::StringRef RelativePath,
-                            const clang::Module *SuggestedModule,
-                            bool ModuleImported,
-                            clang::SrcMgr::CharacteristicKind FileType) override;
+    void InclusionDirective(
+        clang::SourceLocation HashLoc, const clang::Token &IncludeTok,
+        llvm::StringRef FileName, bool IsAngled,
+        clang::CharSourceRange FilenameRange, clang::OptionalFileEntryRef File,
+        llvm::StringRef SearchPath, llvm::StringRef RelativePath,
+        const clang::Module *SuggestedModule, bool ModuleImported,
+        clang::SrcMgr::CharacteristicKind FileType) override;
 
     void MacroExpands(const clang::Token &MacroNameTok,
                       const clang::MacroDefinition &MD,
@@ -47,7 +42,7 @@ public:
     void SourceRangeSkipped(clang::SourceRange Range,
                             clang::SourceLocation EndifLoc) override;
 
-private:
+  private:
     struct PendingInclude {
         std::string containingFile;
         clang::SourceLocation hashLoc;

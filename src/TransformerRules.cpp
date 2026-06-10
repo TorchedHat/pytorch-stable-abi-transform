@@ -27,10 +27,8 @@ static LocFilter buildLocFilter(const std::string &projectRoot) {
         return {isExpansionInMainFile(), isExpansionInMainFile(),
                 isExpansionInMainFile(), ""};
     auto regex = "^" + llvm::Regex::escape(projectRoot);
-    return {isExpansionInFileMatching(regex),
-            isExpansionInFileMatching(regex),
-            isExpansionInFileMatching(regex),
-            projectRoot};
+    return {isExpansionInFileMatching(regex), isExpansionInFileMatching(regex),
+            isExpansionInFileMatching(regex), projectRoot};
 }
 
 static bool shouldUseConstDataPtr(const CXXMemberCallExpr *CE,
@@ -116,10 +114,9 @@ struct ClassifiedLoc {
     SourceLocation spelling;
 };
 
-static ClassifiedLoc classifyLoc(
-    SourceLocation loc, const SourceManager &SM,
-    llvm::StringRef projectRoot = "",
-    MacroPolicy policy = MacroPolicy::RejectAll) {
+static ClassifiedLoc classifyLoc(SourceLocation loc, const SourceManager &SM,
+                                 llvm::StringRef projectRoot = "",
+                                 MacroPolicy policy = MacroPolicy::RejectAll) {
     auto spelling = SM.getSpellingLoc(loc);
     if (!isInProjectScope(SM, spelling, projectRoot))
         return {LocClass::Skip, spelling};
@@ -176,8 +173,10 @@ static bool isEnumQualifierType(std::string_view typeName) {
 static unsigned templateDepthAt(std::string_view text, size_t pos) {
     unsigned depth = 0;
     for (size_t i = 0; i < pos; ++i) {
-        if (text[i] == '<') ++depth;
-        if (text[i] == '>' && depth > 0) --depth;
+        if (text[i] == '<')
+            ++depth;
+        if (text[i] == '>' && depth > 0)
+            --depth;
     }
     return depth;
 }
@@ -204,8 +203,9 @@ static size_t findTypeRuleMatch(std::string_view text, const TypeRule &rule) {
 static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                          bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto editGen = [&rep, rewrite,
+                    projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *TL = R.Nodes.getNodeAs<TypeLoc>("tl");
         if (!TL)
             return noEdits();
@@ -215,20 +215,22 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
             return noEdits();
 
         const auto &SM = *R.SourceManager;
-        auto text = getSourceText(TL->getSourceRange(), SM,
-                                  R.Context->getLangOpts());
+        auto text =
+            getSourceText(TL->getSourceRange(), SM, R.Context->getLangOpts());
 
         if (cl.kind == LocClass::MacroBody) {
-            auto qualName = TL->getType().getUnqualifiedType()
-                .getDesugaredType(*R.Context)
-                .getAsString(R.Context->getPrintingPolicy());
+            auto qualName = TL->getType()
+                                .getUnqualifiedType()
+                                .getDesugaredType(*R.Context)
+                                .getAsString(R.Context->getPrintingPolicy());
             for (const auto &rule : kTypeRules) {
                 if (qualName.find(rule.from) != std::string::npos) {
-                    std::string_view suggestion = rule.to.empty()
-                        ? "decompose into explicit scalar_type, layout, device args"
-                        : rule.to;
-                    flagIfMacroBody(cl, SM, rep, FindingKind::Type,
-                                    rule.from, suggestion);
+                    std::string_view suggestion =
+                        rule.to.empty() ? "decompose into explicit "
+                                          "scalar_type, layout, device args"
+                                        : rule.to;
+                    flagIfMacroBody(cl, SM, rep, FindingKind::Type, rule.from,
+                                    suggestion);
                     return noEdits();
                 }
             }
@@ -241,19 +243,19 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                 continue;
 
             const bool flag_only = rule.to.empty();
-            std::string_view suggestion = flag_only
-                ? "decompose into explicit scalar_type, layout, device args"
-                : rule.to;
+            std::string_view suggestion =
+                flag_only
+                    ? "decompose into explicit scalar_type, layout, device args"
+                    : rule.to;
 
-            rep.addFinding(FindingKind::Type, SM, TL->getBeginLoc(),
-                           rule.from, suggestion,
-                           flag_only ? FindingAction::Flag
-                                     : FindingAction::Rewrite);
+            rep.addFinding(
+                FindingKind::Type, SM, TL->getBeginLoc(), rule.from, suggestion,
+                flag_only ? FindingAction::Flag : FindingAction::Rewrite);
             if (!rewrite || flag_only)
                 return noEdits();
 
-            auto replaceStart = cl.spelling.getLocWithOffset(
-                static_cast<int>(pos));
+            auto replaceStart =
+                cl.spelling.getLocWithOffset(static_cast<int>(pos));
             return singleEdit(replaceStart,
                               static_cast<unsigned>(rule.from.size()),
                               std::string(suggestion));
@@ -263,24 +265,20 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
     };
 
     rules.push_back(makeRule(
-        typeLoc(loc.typeLoc,
-                ast_matchers::loc(qualType(hasDeclaration(namedDecl(hasAnyName(
-            "at::Tensor", "torch::Tensor",
-            "c10::Device", "at::Device", "torch::Device",
-            "at::ScalarType", "c10::ScalarType", "torch::Dtype",
-            "at::DeviceType", "c10::DeviceType",
-            "at::Layout", "c10::Layout",
-            "at::MemoryFormat", "c10::MemoryFormat",
-            "at::Half", "c10::Half",
-            "at::BFloat16", "c10::BFloat16",
-            "c10::Float8_e4m3fn", "c10::Float8_e4m3fnuz",
-            "c10::Float8_e5m2", "c10::Float8_e5m2fnuz",
-            "c10::CppTypeToScalarType",
-            "c10::optional", "std::optional",
-            "c10::ArrayRef", "c10::IntArrayRef", "at::IntArrayRef",
-            "c10::string_view", "std::string_view",
-            "torch::TensorOptions", "at::TensorOptions", "c10::TensorOptions"
-        ))))))
+        typeLoc(
+            loc.typeLoc,
+            ast_matchers::loc(qualType(hasDeclaration(namedDecl(hasAnyName(
+                "at::Tensor", "torch::Tensor", "c10::Device", "at::Device",
+                "torch::Device", "at::ScalarType", "c10::ScalarType",
+                "torch::Dtype", "at::DeviceType", "c10::DeviceType",
+                "at::Layout", "c10::Layout", "at::MemoryFormat",
+                "c10::MemoryFormat", "at::Half", "c10::Half", "at::BFloat16",
+                "c10::BFloat16", "c10::Float8_e4m3fn", "c10::Float8_e4m3fnuz",
+                "c10::Float8_e5m2", "c10::Float8_e5m2fnuz",
+                "c10::CppTypeToScalarType", "c10::optional", "std::optional",
+                "c10::ArrayRef", "c10::IntArrayRef", "at::IntArrayRef",
+                "c10::string_view", "std::string_view", "torch::TensorOptions",
+                "at::TensorOptions", "c10::TensorOptions"))))))
             .bind("tl"),
         EditGenerator(editGen)));
 }
@@ -293,15 +291,12 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
 // offset. shared_ptr is needed because std::function (inside EditGenerator)
 // requires a copyable lambda.
 template <MappingRuleRange ShorthandTable>
-static llvm::Expected<SmallVector<Edit, 1>> rewriteEnumRef(
-    const MatchFinder::MatchResult &R,
-    Reporter &rep, bool rewrite,
-    llvm::DenseSet<unsigned> &dedup,
-    llvm::StringRef bindName,
-    const ShorthandTable &shorthands,
-    std::string_view typePrefix1, std::string_view typePrefix2,
-    std::string_view macroBodyDesc,
-    llvm::StringRef projectRoot = "") {
+static llvm::Expected<SmallVector<Edit, 1>>
+rewriteEnumRef(const MatchFinder::MatchResult &R, Reporter &rep, bool rewrite,
+               llvm::DenseSet<unsigned> &dedup, llvm::StringRef bindName,
+               const ShorthandTable &shorthands, std::string_view typePrefix1,
+               std::string_view typePrefix2, std::string_view macroBodyDesc,
+               llvm::StringRef projectRoot = "") {
 
     const auto *DRE = R.Nodes.getNodeAs<DeclRefExpr>(bindName);
     if (!DRE)
@@ -317,24 +312,23 @@ static llvm::Expected<SmallVector<Edit, 1>> rewriteEnumRef(
     if (!dedup.insert(SM.getFileOffset(spellingLoc)).second)
         return noEdits();
     if (SM.isMacroBodyExpansion(loc)) {
-        rep.addFinding(FindingKind::ScalarType, SM, spellingLoc,
-                       macroBodyDesc, "(inside macro body)",
-                       FindingAction::Flag);
+        rep.addFinding(FindingKind::ScalarType, SM, spellingLoc, macroBodyDesc,
+                       "(inside macro body)", FindingAction::Flag);
         return noEdits();
     }
 
     const bool in_macro_arg = SM.isMacroArgExpansion(loc);
-    SourceRange textRange = in_macro_arg
-        ? SourceRange(SM.getSpellingLoc(DRE->getBeginLoc()),
-                       SM.getSpellingLoc(DRE->getEndLoc()))
-        : DRE->getSourceRange();
+    SourceRange textRange =
+        in_macro_arg ? SourceRange(SM.getSpellingLoc(DRE->getBeginLoc()),
+                                   SM.getSpellingLoc(DRE->getEndLoc()))
+                     : DRE->getSourceRange();
     std::string text = getSourceText(textRange, SM, LO);
     SourceLocation rewriteLoc = in_macro_arg ? spellingLoc : loc;
 
     for (const auto &rule : shorthands) {
         if (text == rule.from) {
-            rep.addFinding(FindingKind::ScalarType, SM, spellingLoc,
-                           rule.from, rule.to);
+            rep.addFinding(FindingKind::ScalarType, SM, spellingLoc, rule.from,
+                           rule.to);
             if (!rewrite)
                 return noEdits();
             return singleEdit(rewriteLoc,
@@ -347,14 +341,13 @@ static llvm::Expected<SmallVector<Edit, 1>> rewriteEnumRef(
         if (rule.from != typePrefix1 && rule.from != typePrefix2)
             continue;
         if (text.starts_with(rule.from)) {
-            std::string newText = std::string(rule.to) +
-                                  text.substr(rule.from.size());
-            rep.addFinding(FindingKind::ScalarType, SM, spellingLoc,
-                           text, newText);
+            std::string newText =
+                std::string(rule.to) + text.substr(rule.from.size());
+            rep.addFinding(FindingKind::ScalarType, SM, spellingLoc, text,
+                           newText);
             if (!rewrite)
                 return noEdits();
-            return singleEdit(rewriteLoc,
-                              static_cast<unsigned>(text.size()),
+            return singleEdit(rewriteLoc, static_cast<unsigned>(text.size()),
                               newText);
         }
     }
@@ -365,21 +358,20 @@ static llvm::Expected<SmallVector<Edit, 1>> rewriteEnumRef(
 template <MappingRuleRange ShorthandArray>
 static void addEnumShorthandRules(
     std::vector<RewriteRule> &rules, Reporter &rep, bool rewrite,
-    const LocFilter &loc,
-    StatementMatcher shorthandMatcher, StatementMatcher enumMatcher,
-    llvm::StringRef bindName, const ShorthandArray &shorthands,
-    std::string_view typePrefix1, std::string_view typePrefix2,
-    std::string_view macroBodyDesc) {
+    const LocFilter &loc, StatementMatcher shorthandMatcher,
+    StatementMatcher enumMatcher, llvm::StringRef bindName,
+    const ShorthandArray &shorthands, std::string_view typePrefix1,
+    std::string_view typePrefix2, std::string_view macroBodyDesc) {
 
     auto dedup = std::make_shared<llvm::DenseSet<unsigned>>();
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, dedup, projectRoot, bindName,
-                    &shorthands, typePrefix1, typePrefix2,
+    auto editGen = [&rep, rewrite, dedup, projectRoot, bindName, &shorthands,
+                    typePrefix1, typePrefix2,
                     macroBodyDesc](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
-        return rewriteEnumRef(R, rep, rewrite, *dedup, bindName,
-                              shorthands, typePrefix1, typePrefix2,
-                              macroBodyDesc, projectRoot);
+        -> llvm::Expected<SmallVector<Edit, 1>> {
+        return rewriteEnumRef(R, rep, rewrite, *dedup, bindName, shorthands,
+                              typePrefix1, typePrefix2, macroBodyDesc,
+                              projectRoot);
     };
 
     rules.push_back(makeRule(shorthandMatcher, EditGenerator(editGen)));
@@ -388,42 +380,41 @@ static void addEnumShorthandRules(
 
 static void addScalarTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                                bool rewrite, const LocFilter &loc) {
-    addEnumShorthandRules(rules, rep, rewrite, loc,
-        declRefExpr(loc.stmt,
+    addEnumShorthandRules(
+        rules, rep, rewrite, loc,
+        declRefExpr(
+            loc.stmt,
             to(namedDecl(hasAnyName(
-            "kFloat", "kFloat16", "kFloat32", "kFloat64",
-            "kDouble", "kHalf", "kBFloat16", "kBool",
-            "kByte", "kChar", "kShort", "kInt", "kInt8",
-            "kInt16", "kInt32", "kInt64", "kLong",
-            "kFloat8_e4m3fn", "kFloat8_e5m2", "kFloat8_e4m3fnuz",
-            "kFloat8_e5m2fnuz", "kFloat8_e8m0fnu",
-            "kFloat4_e2m1fn_x2",
-            "kComplexHalf", "kComplexFloat",
-            "kComplexDouble", "kUInt8"))))
+                "kFloat", "kFloat16", "kFloat32", "kFloat64", "kDouble",
+                "kHalf", "kBFloat16", "kBool", "kByte", "kChar", "kShort",
+                "kInt", "kInt8", "kInt16", "kInt32", "kInt64", "kLong",
+                "kFloat8_e4m3fn", "kFloat8_e5m2", "kFloat8_e4m3fnuz",
+                "kFloat8_e5m2fnuz", "kFloat8_e8m0fnu", "kFloat4_e2m1fn_x2",
+                "kComplexHalf", "kComplexFloat", "kComplexDouble", "kUInt8"))))
             .bind("scalarRef"),
-        declRefExpr(loc.stmt,
-            to(enumConstantDecl(hasDeclContext(enumDecl(hasName("ScalarType"))))))
+        declRefExpr(loc.stmt, to(enumConstantDecl(hasDeclContext(
+                                  enumDecl(hasName("ScalarType"))))))
             .bind("scalarRef"),
-        "scalarRef", kScalarTypeShorthands,
-        "at::ScalarType", "c10::ScalarType", "scalar type shorthand");
+        "scalarRef", kScalarTypeShorthands, "at::ScalarType", "c10::ScalarType",
+        "scalar type shorthand");
 }
 
 static void addDeviceTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                                bool rewrite, const LocFilter &loc) {
-    addEnumShorthandRules(rules, rep, rewrite, loc,
+    addEnumShorthandRules(
+        rules, rep, rewrite, loc,
         declRefExpr(loc.stmt,
-            to(namedDecl(hasAnyName(
-            "kCPU", "kCUDA", "kMKLDNN", "kOPENGL", "kOPENCL",
-            "kIDEEP", "kHIP", "kFPGA", "kMAIA", "kXLA",
-            "kVulkan", "kMetal", "kXPU", "kMPS", "kMeta",
-            "kHPU", "kVE", "kLazy", "kIPU", "kMTIA",
-            "kPrivateUse1"))))
+                    to(namedDecl(hasAnyName(
+                        "kCPU", "kCUDA", "kMKLDNN", "kOPENGL", "kOPENCL",
+                        "kIDEEP", "kHIP", "kFPGA", "kMAIA", "kXLA", "kVulkan",
+                        "kMetal", "kXPU", "kMPS", "kMeta", "kHPU", "kVE",
+                        "kLazy", "kIPU", "kMTIA", "kPrivateUse1"))))
             .bind("deviceRef"),
-        declRefExpr(loc.stmt,
-            to(enumConstantDecl(hasDeclContext(enumDecl(hasName("DeviceType"))))))
+        declRefExpr(loc.stmt, to(enumConstantDecl(hasDeclContext(
+                                  enumDecl(hasName("DeviceType"))))))
             .bind("deviceRef"),
-        "deviceRef", kDeviceTypeShorthands,
-        "at::DeviceType", "c10::DeviceType", "device type");
+        "deviceRef", kDeviceTypeShorthands, "at::DeviceType", "c10::DeviceType",
+        "device type");
 }
 
 // ---------------------------------------------------------------------------
@@ -433,8 +424,9 @@ static void addDeviceTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
 static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
                            bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto editGen = [&rep, rewrite,
+                    projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("dataPtrCall");
         if (!CE || !isTensorType(CE->getImplicitObjectArgument()))
             return noEdits();
@@ -453,8 +445,8 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
         const std::string replacement =
             use_const ? "const_data_ptr" : "mutable_data_ptr";
 
-        if (flagIfMacroBody(cl, SM, rep, FindingKind::DataPtr,
-                            "data_ptr", replacement))
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::DataPtr, "data_ptr",
+                            replacement))
             return noEdits();
 
         if (ME->hasExplicitTemplateArgs()) {
@@ -481,14 +473,17 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
         if (!rewrite)
             return noEdits();
 
-        return singleEdit(memberLoc,
-                          static_cast<unsigned>(std::string_view("data_ptr").size()),
-                          replacement);
+        return singleEdit(
+            memberLoc,
+            static_cast<unsigned>(std::string_view("data_ptr").size()),
+            replacement);
     };
 
     rules.push_back(makeRule(
-        cxxMemberCallExpr(loc.stmt,
-            callee(memberExpr(member(hasName("data_ptr"))).bind("dataPtrMember")))
+        cxxMemberCallExpr(
+            loc.stmt,
+            callee(
+                memberExpr(member(hasName("data_ptr"))).bind("dataPtrMember")))
             .bind("dataPtrCall"),
         EditGenerator(editGen)));
 }
@@ -497,12 +492,12 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
 // Method-to-free-function rules (from kMethodToFreeFuncRules)
 // ---------------------------------------------------------------------------
 
-static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
-                                 Reporter &rep, bool rewrite,
-                                 const LocFilter &loc) {
+static void addMethodToFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
+                                 bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto editGen = [&rep, rewrite,
+                    projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("methodCall");
         if (!CE)
             return noEdits();
@@ -561,10 +556,10 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
         methodNames.push_back(std::string(rule.from));
 
     rules.push_back(makeRule(
-        cxxMemberCallExpr(loc.stmt,
-            callee(memberExpr(member(cxxMethodDecl(
-                hasAnyNameFromVec(std::move(methodNames)))))
-                .bind("methodMember")))
+        cxxMemberCallExpr(
+            loc.stmt, callee(memberExpr(member(cxxMethodDecl(hasAnyNameFromVec(
+                                            std::move(methodNames)))))
+                                 .bind("methodMember")))
             .bind("methodCall"),
         EditGenerator(editGen)));
 }
@@ -573,20 +568,20 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules,
 // Method rename rules (dtype→scalar_type, sizes()[i]→size(i))
 // ---------------------------------------------------------------------------
 
-static void addMethodRenameRules(std::vector<RewriteRule> &rules,
-                                 Reporter &rep, bool rewrite,
-                                 const LocFilter &loc) {
+static void addMethodRenameRules(std::vector<RewriteRule> &rules, Reporter &rep,
+                                 bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
 
     // TensorOptions constructor — flag only
     auto tensorOptsGen = [&rep, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *Ctor =
             R.Nodes.getNodeAs<CXXConstructExpr>("tensorOptionsConstruct");
         if (!Ctor)
             return noEdits();
 
-        auto cl = classifyLoc(Ctor->getBeginLoc(), *R.SourceManager, projectRoot);
+        auto cl =
+            classifyLoc(Ctor->getBeginLoc(), *R.SourceManager, projectRoot);
         if (cl.kind == LocClass::Skip)
             return noEdits();
 
@@ -594,8 +589,8 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
                                   R.Context->getLangOpts());
         std::string_view suggestion =
             "decompose into explicit scalar_type, layout, device args";
-        if (flagIfMacroBody(cl, *R.SourceManager, rep, FindingKind::Type,
-                            text, suggestion))
+        if (flagIfMacroBody(cl, *R.SourceManager, rep, FindingKind::Type, text,
+                            suggestion))
             return noEdits();
 
         rep.addFinding(FindingKind::Type, *R.SourceManager, Ctor->getBeginLoc(),
@@ -604,18 +599,18 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
     };
 
     rules.push_back(makeRule(
-        cxxConstructExpr(loc.stmt,
-            hasType(hasUnqualifiedDesugaredType(recordType(
-            hasDeclaration(cxxRecordDecl(hasName("TensorOptions")))))))
+        cxxConstructExpr(loc.stmt, hasType(hasUnqualifiedDesugaredType(
+                                       recordType(hasDeclaration(cxxRecordDecl(
+                                           hasName("TensorOptions")))))))
             .bind("tensorOptionsConstruct"),
         EditGenerator(tensorOptsGen)));
 
     // .sizes()[i] → .size(i), .strides()[i] → .stride(i)
-    auto rewriteSizes = [&rep, rewrite](
+    auto rewriteSizes =
+        [&rep, rewrite](
             const MatchFinder::MatchResult &R,
-            const CXXMemberCallExpr *sizesCall,
-            const Expr *idx, SourceRange fullRange)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+            const CXXMemberCallExpr *sizesCall, const Expr *idx,
+            SourceRange fullRange) -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto &SM = *R.SourceManager;
         const auto &LO = R.Context->getLangOpts();
 
@@ -650,50 +645,53 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
         return singleEdit(fullRange, replacement);
     };
 
-    auto sizesGen = [&rep, rewriteSizes, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto sizesGen = [&rep, rewriteSizes,
+                     projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *ASE =
             R.Nodes.getNodeAs<ArraySubscriptExpr>("sizesSubscript");
         if (!ASE)
             return noEdits();
-        auto cl = classifyLoc(ASE->getBeginLoc(), *R.SourceManager, projectRoot);
+        auto cl =
+            classifyLoc(ASE->getBeginLoc(), *R.SourceManager, projectRoot);
         if (cl.kind == LocClass::Skip)
             return noEdits();
-        if (flagIfMacroBody(cl, *R.SourceManager, rep, FindingKind::MethodToFunc,
-                            "sizes()[i]", "size(i)"))
+        if (flagIfMacroBody(cl, *R.SourceManager, rep,
+                            FindingKind::MethodToFunc, "sizes()[i]", "size(i)"))
             return noEdits();
         const auto *sizesCall =
             R.Nodes.getNodeAs<CXXMemberCallExpr>("sizesCall");
         if (!sizesCall)
             return noEdits();
-        return rewriteSizes(R, sizesCall, ASE->getIdx(),
-                            ASE->getSourceRange());
+        return rewriteSizes(R, sizesCall, ASE->getIdx(), ASE->getSourceRange());
     };
 
     rules.push_back(makeRule(
-        arraySubscriptExpr(loc.stmt,
-            hasBase(hasDescendant(
-            cxxMemberCallExpr(callee(cxxMethodDecl(
-                hasAnyName("sizes", "strides"))))
-                .bind("sizesCall"))))
+        arraySubscriptExpr(
+            loc.stmt, hasBase(hasDescendant(
+                          cxxMemberCallExpr(callee(cxxMethodDecl(hasAnyName(
+                                                "sizes", "strides"))))
+                              .bind("sizesCall"))))
             .bind("sizesSubscript"),
         EditGenerator(sizesGen)));
 
     // CXXOperatorCallExpr version (overloaded operator[])
-    auto sizesOpGen = [&rep, rewriteSizes, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto sizesOpGen = [&rep, rewriteSizes,
+                       projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *Sub =
             R.Nodes.getNodeAs<CXXOperatorCallExpr>("sizesSubscriptOp");
         if (!Sub || Sub->getNumArgs() < 2)
             return noEdits();
-        auto cl = classifyLoc(Sub->getBeginLoc(), *R.SourceManager, projectRoot);
+        auto cl =
+            classifyLoc(Sub->getBeginLoc(), *R.SourceManager, projectRoot);
         if (cl.kind == LocClass::Skip)
             return noEdits();
-        if (flagIfMacroBody(cl, *R.SourceManager, rep, FindingKind::MethodToFunc,
-                            "sizes()[i]", "size(i)"))
+        if (flagIfMacroBody(cl, *R.SourceManager, rep,
+                            FindingKind::MethodToFunc, "sizes()[i]", "size(i)"))
             return noEdits();
-        const auto *sizesCall = dyn_cast<CXXMemberCallExpr>(
-            Sub->getArg(0)->IgnoreImplicit());
+        const auto *sizesCall =
+            dyn_cast<CXXMemberCallExpr>(Sub->getArg(0)->IgnoreImplicit());
         if (!sizesCall)
             return noEdits();
         return rewriteSizes(R, sizesCall, Sub->getArg(1),
@@ -701,16 +699,17 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
     };
 
     rules.push_back(makeRule(
-        cxxOperatorCallExpr(loc.stmt,
-            hasOverloadedOperatorName("[]"),
-            hasArgument(0, ignoringImplicit(cxxMemberCallExpr(
-                callee(cxxMethodDecl(hasAnyName("sizes", "strides")))))))
+        cxxOperatorCallExpr(loc.stmt, hasOverloadedOperatorName("[]"),
+                            hasArgument(0, ignoringImplicit(cxxMemberCallExpr(
+                                               callee(cxxMethodDecl(hasAnyName(
+                                                   "sizes", "strides")))))))
             .bind("sizesSubscriptOp"),
         EditGenerator(sizesOpGen)));
 
     // .dtype() → .scalar_type()
-    auto dtypeGen = [&rep, rewrite, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto dtypeGen = [&rep, rewrite,
+                     projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("methodRename");
         if (!CE || !isTensorType(CE->getImplicitObjectArgument()))
             return noEdits();
@@ -721,8 +720,8 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
         if (!isInProjectScope(SM, spellingLoc, projectRoot))
             return noEdits();
         if (SM.isMacroBodyExpansion(exprLoc)) {
-            rep.addFinding(FindingKind::MethodToFunc, SM, spellingLoc,
-                           "dtype", "scalar_type (inside macro body)",
+            rep.addFinding(FindingKind::MethodToFunc, SM, spellingLoc, "dtype",
+                           "scalar_type (inside macro body)",
                            FindingAction::Flag);
             return noEdits();
         }
@@ -738,10 +737,10 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
                 continue;
 
             auto memberLoc = in_macro_arg
-                ? SM.getSpellingLoc(ME->getMemberLoc())
-                : ME->getMemberLoc();
-            rep.addFinding(FindingKind::MethodToFunc, SM, memberLoc,
-                           rule.from, rule.to);
+                                 ? SM.getSpellingLoc(ME->getMemberLoc())
+                                 : ME->getMemberLoc();
+            rep.addFinding(FindingKind::MethodToFunc, SM, memberLoc, rule.from,
+                           rule.to);
             if (!rewrite)
                 return noEdits();
 
@@ -757,9 +756,10 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules,
         renameNames.push_back(std::string(rule.from));
 
     rules.push_back(makeRule(
-        cxxMemberCallExpr(loc.stmt,
+        cxxMemberCallExpr(
+            loc.stmt,
             callee(memberExpr(member(hasAnyNameFromVec(std::move(renameNames))))
-                .bind("dtypeMember")))
+                       .bind("dtypeMember")))
             .bind("methodRename"),
         EditGenerator(dtypeGen)));
 }
@@ -772,8 +772,9 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                                 bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
     // at::elementSize(tensor.scalar_type/dtype()) → tensor.element_size()
-    auto exactGen = [&rep, rewrite, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto exactGen = [&rep, rewrite,
+                     projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CallExpr>("elemSizeExact");
         if (!CE)
             return noEdits();
@@ -792,12 +793,12 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
         std::string replacement = objText + ".element_size()";
         auto fullText = getSourceText(CE->getSourceRange(), SM, LO);
 
-        if (flagIfMacroBody(cl, SM, rep, FindingKind::FreeFunc,
-                            fullText, replacement))
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::FreeFunc, fullText,
+                            replacement))
             return noEdits();
 
-        rep.addFinding(FindingKind::FreeFunc, SM, CE->getBeginLoc(),
-                       fullText, replacement);
+        rep.addFinding(FindingKind::FreeFunc, SM, CE->getBeginLoc(), fullText,
+                       replacement);
         if (!rewrite)
             return noEdits();
 
@@ -806,17 +807,18 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
 
     rules.push_back(makeRule(
         callExpr(loc.stmt,
-            callee(functionDecl(hasAnyName("at::elementSize", "c10::elementSize"))),
-            hasArgument(0, ignoringImplicit(
-                cxxMemberCallExpr(
-                    callee(cxxMethodDecl(hasAnyName("scalar_type", "dtype"))),
-                    on(expr().bind("elemObj"))))))
+                 callee(functionDecl(
+                     hasAnyName("at::elementSize", "c10::elementSize"))),
+                 hasArgument(0, ignoringImplicit(cxxMemberCallExpr(
+                                    callee(cxxMethodDecl(
+                                        hasAnyName("scalar_type", "dtype"))),
+                                    on(expr().bind("elemObj"))))))
             .bind("elemSizeExact"),
         EditGenerator(exactGen)));
 
     // at::elementSize(...) — flag only (can't auto-rewrite)
     auto fallbackGen = [&rep, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CallExpr>("elemSizeFallback");
         if (!CE)
             return noEdits();
@@ -832,14 +834,14 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
             return noEdits();
 
         rep.addFinding(FindingKind::FreeFunc, *R.SourceManager,
-                       CE->getBeginLoc(), text,
-                       "tensor.element_size()", FindingAction::Flag);
+                       CE->getBeginLoc(), text, "tensor.element_size()",
+                       FindingAction::Flag);
         return noEdits();
     };
 
     rules.push_back(makeRule(
-        callExpr(loc.stmt,
-            callee(functionDecl(hasAnyName("at::elementSize", "c10::elementSize"))))
+        callExpr(loc.stmt, callee(functionDecl(hasAnyName("at::elementSize",
+                                                          "c10::elementSize"))))
             .bind("elemSizeFallback"),
         EditGenerator(fallbackGen)));
 }
@@ -847,8 +849,9 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
 static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
                              bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto editGen = [&rep, rewrite,
+                    projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CallExpr>("freeFuncCall");
         if (!CE)
             return noEdits();
@@ -872,26 +875,23 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
         auto writtenText = getSourceText(DRE->getSourceRange(), SM, LO);
 
         for (const auto &rule : kFreeFuncRules) {
-            if (canonicalName != rule.from &&
-                writtenText != rule.from)
+            if (canonicalName != rule.from && writtenText != rule.from)
                 continue;
 
-            if (flagIfMacroBody(cl, SM, rep, FindingKind::FreeFunc,
-                                writtenText, rule.to))
+            if (flagIfMacroBody(cl, SM, rep, FindingKind::FreeFunc, writtenText,
+                                rule.to))
                 return noEdits();
 
-            auto oldFunc = rule.from.substr(
-                rule.from.rfind(':') + 1);
-            auto newFunc = rule.to.substr(
-                rule.to.rfind(':') + 1);
+            auto oldFunc = rule.from.substr(rule.from.rfind(':') + 1);
+            auto newFunc = rule.to.substr(rule.to.rfind(':') + 1);
             bool name_changes = (oldFunc != newFunc);
 
             if (name_changes) {
-                std::string suggestion = std::string(rule.to) +
+                std::string suggestion =
+                    std::string(rule.to) +
                     " (function name changes — adjust arguments manually)";
                 rep.addFinding(FindingKind::FreeFunc, SM, CE->getBeginLoc(),
-                               writtenText, suggestion,
-                               FindingAction::Flag);
+                               writtenText, suggestion, FindingAction::Flag);
                 return noEdits();
             }
 
@@ -900,8 +900,7 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
             if (!rewrite)
                 return noEdits();
 
-            return singleEdit(DRE->getSourceRange(),
-                              std::string(rule.to));
+            return singleEdit(DRE->getSourceRange(), std::string(rule.to));
         }
         return noEdits();
     };
@@ -912,7 +911,7 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
 
     rules.push_back(makeRule(
         callExpr(loc.stmt,
-            callee(functionDecl(hasAnyNameFromVec(std::move(funcNames)))))
+                 callee(functionDecl(hasAnyNameFromVec(std::move(funcNames)))))
             .bind("freeFuncCall"),
         EditGenerator(editGen)));
 }
@@ -924,8 +923,9 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
 static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
                           bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto editGen = [&rep, rewrite,
+                    projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("nbytesCall");
         if (!CE || !isTensorType(CE->getImplicitObjectArgument()))
             return noEdits();
@@ -940,11 +940,11 @@ static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
         auto objText = getSourceText(obj->getSourceRange(), SM, LO);
         auto fullText = getSourceText(CE->getSourceRange(), SM, LO);
 
-        std::string replacement = objText + ".numel() * " +
-                                  objText + ".element_size()";
+        std::string replacement =
+            objText + ".numel() * " + objText + ".element_size()";
 
-        if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc,
-                            fullText, replacement))
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc, fullText,
+                            replacement))
             return noEdits();
 
         const bool sideEffectFree =
@@ -966,8 +966,7 @@ static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
     };
 
     rules.push_back(makeRule(
-        cxxMemberCallExpr(loc.stmt,
-            callee(cxxMethodDecl(hasName("nbytes"))))
+        cxxMemberCallExpr(loc.stmt, callee(cxxMethodDecl(hasName("nbytes"))))
             .bind("nbytesCall"),
         EditGenerator(editGen)));
 }
@@ -979,8 +978,9 @@ static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
 static void addNulloptRule(std::vector<RewriteRule> &rules, Reporter &rep,
                            bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto editGen = [&rep, rewrite,
+                    projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *DRE = R.Nodes.getNodeAs<DeclRefExpr>("nulloptRef");
         if (!DRE)
             return noEdits();
@@ -990,30 +990,28 @@ static void addNulloptRule(std::vector<RewriteRule> &rules, Reporter &rep,
         if (cl.kind == LocClass::Skip)
             return noEdits();
 
-        auto text = getSourceText(DRE->getSourceRange(), SM,
-                                  R.Context->getLangOpts());
+        auto text =
+            getSourceText(DRE->getSourceRange(), SM, R.Context->getLangOpts());
         if (text != "c10::nullopt" && text != "::c10::nullopt")
             return noEdits();
 
-        if (flagIfMacroBody(cl, SM, rep, FindingKind::Type,
-                            text, "std::nullopt"))
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::Type, text,
+                            "std::nullopt"))
             return noEdits();
 
-        rep.addFinding(FindingKind::Type, SM, DRE->getBeginLoc(),
-                       text, "std::nullopt");
+        rep.addFinding(FindingKind::Type, SM, DRE->getBeginLoc(), text,
+                       "std::nullopt");
         if (!rewrite)
             return noEdits();
 
-        return singleEdit(cl.spelling,
-                          static_cast<unsigned>(text.size()),
+        return singleEdit(cl.spelling, static_cast<unsigned>(text.size()),
                           "std::nullopt");
     };
 
-    rules.push_back(makeRule(
-        declRefExpr(loc.stmt,
-                    to(namedDecl(hasName("std::nullopt"))))
-            .bind("nulloptRef"),
-        EditGenerator(editGen)));
+    rules.push_back(
+        makeRule(declRefExpr(loc.stmt, to(namedDecl(hasName("std::nullopt"))))
+                     .bind("nulloptRef"),
+                 EditGenerator(editGen)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,9 +1042,9 @@ static void addUnstableMethodCallCatchAll(std::vector<RewriteRule> &rules,
 
     auto handledPtr = std::make_shared<llvm::StringSet<>>(std::move(handled));
 
-    auto editGen = [&rep, projectRoot, handledPtr](
-                       const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+    auto editGen = [&rep, projectRoot,
+                    handledPtr](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("catchallMethod");
         if (!CE)
             return noEdits();
@@ -1059,9 +1057,11 @@ static void addUnstableMethodCallCatchAll(std::vector<RewriteRule> &rules,
         const auto *obj = CE->getImplicitObjectArgument();
         if (!obj)
             return noEdits();
-        auto objType = obj->getType().getNonReferenceType().getUnqualifiedType();
+        auto objType =
+            obj->getType().getNonReferenceType().getUnqualifiedType();
         if (objType->isPointerType())
-            objType = objType->getPointeeType().getNonReferenceType()
+            objType = objType->getPointeeType()
+                          .getNonReferenceType()
                           .getUnqualifiedType();
         const auto *RD = objType->getAsCXXRecordDecl();
         if (!RD)
@@ -1070,8 +1070,8 @@ static void addUnstableMethodCallCatchAll(std::vector<RewriteRule> &rules,
             return noEdits();
 
         const auto *MD = CE->getMethodDecl();
-        if (!MD || MD->isOverloadedOperator() ||
-            isa<CXXDestructorDecl>(MD) || isa<CXXConversionDecl>(MD))
+        if (!MD || MD->isOverloadedOperator() || isa<CXXDestructorDecl>(MD) ||
+            isa<CXXConversionDecl>(MD))
             return noEdits();
 
         auto methodName = MD->getNameAsString();
@@ -1080,28 +1080,29 @@ static void addUnstableMethodCallCatchAll(std::vector<RewriteRule> &rules,
 
         bool inMacroBody = SM.isMacroBodyExpansion(CE->getBeginLoc());
         std::string text = inMacroBody
-            ? ("." + methodName + "()")
-            : getSourceText(CE->getSourceRange(), SM, R.Context->getLangOpts());
+                               ? ("." + methodName + "()")
+                               : getSourceText(CE->getSourceRange(), SM,
+                                               R.Context->getLangOpts());
         std::string msg = "." + methodName + "() has no stable ABI equivalent";
-        if (inMacroBody) msg += " (inside macro body)";
+        if (inMacroBody)
+            msg += " (inside macro body)";
 
-        rep.addFinding(FindingKind::UnstableMethod, SM, spelling,
-                       text, msg, FindingAction::Flag);
+        rep.addFinding(FindingKind::UnstableMethod, SM, spelling, text, msg,
+                       FindingAction::Flag);
         return noEdits();
     };
 
-    rules.push_back(makeRule(
-        cxxMemberCallExpr(loc.stmt).bind("catchallMethod"),
-        EditGenerator(editGen)));
+    rules.push_back(makeRule(cxxMemberCallExpr(loc.stmt).bind("catchallMethod"),
+                             EditGenerator(editGen)));
 }
 
 static void addUnstableTypeCatchAll(std::vector<RewriteRule> &rules,
-                                     Reporter &rep, const LocFilter &loc) {
+                                    Reporter &rep, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
     auto dedup = std::make_shared<
         llvm::DenseSet<std::pair<const NamedDecl *, unsigned>>>();
     auto editGen = [&rep, projectRoot, dedup](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *TL = R.Nodes.getNodeAs<TypeLoc>("catchallType");
         if (!TL)
             return noEdits();
@@ -1125,28 +1126,30 @@ static void addUnstableTypeCatchAll(std::vector<RewriteRule> &rules,
 
         bool inMacroBody = SM.isMacroBodyExpansion(TL->getBeginLoc());
         std::string text = inMacroBody
-            ? qualName
-            : getSourceText(TL->getSourceRange(), SM, R.Context->getLangOpts());
-        std::string msg = "no stable equivalent — rewrite or remove " + qualName;
-        if (inMacroBody) msg += " (inside macro body)";
-        rep.addFinding(FindingKind::UnstableType, SM, spelling,
-                       text, msg, FindingAction::Flag);
+                               ? qualName
+                               : getSourceText(TL->getSourceRange(), SM,
+                                               R.Context->getLangOpts());
+        std::string msg =
+            "no stable equivalent — rewrite or remove " + qualName;
+        if (inMacroBody)
+            msg += " (inside macro body)";
+        rep.addFinding(FindingKind::UnstableType, SM, spelling, text, msg,
+                       FindingAction::Flag);
         return noEdits();
     };
 
     rules.push_back(makeRule(
-        typeLoc(loc.typeLoc,
-                ast_matchers::loc(qualType(hasDeclaration(
-                    namedDecl().bind("catchallTypeDecl")))))
+        typeLoc(loc.typeLoc, ast_matchers::loc(qualType(hasDeclaration(
+                                 namedDecl().bind("catchallTypeDecl")))))
             .bind("catchallType"),
         EditGenerator(editGen)));
 }
 
 static void addUnstableRefCatchAll(std::vector<RewriteRule> &rules,
-                                    Reporter &rep, const LocFilter &loc) {
+                                   Reporter &rep, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
     auto editGen = [&rep, projectRoot](const MatchFinder::MatchResult &R)
-            -> llvm::Expected<SmallVector<Edit, 1>> {
+        -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *DRE = R.Nodes.getNodeAs<DeclRefExpr>("catchallRef");
         if (!DRE)
             return noEdits();
@@ -1171,20 +1174,22 @@ static void addUnstableRefCatchAll(std::vector<RewriteRule> &rules,
 
         bool inMacroBody = SM.isMacroBodyExpansion(DRE->getBeginLoc());
         std::string text = inMacroBody
-            ? qualName
-            : getSourceText(DRE->getSourceRange(), SM, R.Context->getLangOpts());
-        std::string msg = "no stable equivalent — rewrite or remove " + qualName;
-        if (inMacroBody) msg += " (inside macro body)";
-        rep.addFinding(FindingKind::UnstableRef, SM, spelling,
-                       text, msg, FindingAction::Flag);
+                               ? qualName
+                               : getSourceText(DRE->getSourceRange(), SM,
+                                               R.Context->getLangOpts());
+        std::string msg =
+            "no stable equivalent — rewrite or remove " + qualName;
+        if (inMacroBody)
+            msg += " (inside macro body)";
+        rep.addFinding(FindingKind::UnstableRef, SM, spelling, text, msg,
+                       FindingAction::Flag);
         return noEdits();
     };
 
-    rules.push_back(makeRule(
-        declRefExpr(loc.stmt,
-                    to(namedDecl().bind("catchallRefDecl")))
-            .bind("catchallRef"),
-        EditGenerator(editGen)));
+    rules.push_back(
+        makeRule(declRefExpr(loc.stmt, to(namedDecl().bind("catchallRefDecl")))
+                     .bind("catchallRef"),
+                 EditGenerator(editGen)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,10 +1235,9 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
     if (SM.isMacroBodyExpansion(loc)) {
         auto text = getSourceText(VD->getSourceRange(), SM, LO);
         if (text.find("CUDAGuard") != std::string::npos) {
-            reporter_.addFinding(FindingKind::DeviceGuard, SM,
-                                 SM.getSpellingLoc(loc), text,
-                                 "DeviceGuard usage inside macro body",
-                                 FindingAction::Flag);
+            reporter_.addFinding(
+                FindingKind::DeviceGuard, SM, SM.getSpellingLoc(loc), text,
+                "DeviceGuard usage inside macro body", FindingAction::Flag);
         }
         return;
     }
@@ -1248,8 +1252,8 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
     std::string deviceExpr;
 
     if (const auto *init = VD->getInit()) {
-        if (const auto *CE = dyn_cast<CXXConstructExpr>(
-                init->IgnoreImplicit())) {
+        if (const auto *CE =
+                dyn_cast<CXXConstructExpr>(init->IgnoreImplicit())) {
             if (CE->getNumArgs() > 0) {
                 auto argText =
                     getSourceText(CE->getArg(0)->getSourceRange(), SM, LO);
@@ -1270,8 +1274,10 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
                                 if (method->getName() == "device") {
                                     auto objText = getSourceText(
                                         memberCall->getImplicitObjectArgument()
-                                            ->getSourceRange(), SM, LO);
-                                    deviceExpr = objText + ".get_device_index()";
+                                            ->getSourceRange(),
+                                        SM, LO);
+                                    deviceExpr =
+                                        objText + ".get_device_index()";
                                 }
                             }
                         }
@@ -1304,11 +1310,10 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
     }
 
     if (deviceExpr.empty()) {
-        reporter_.addFinding(
-            FindingKind::DeviceGuard, SM, loc, text,
-            "torch::stable::accelerator::DeviceGuard " + varName +
-                "(tensor.get_device_index())",
-            FindingAction::Flag);
+        reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text,
+                             "torch::stable::accelerator::DeviceGuard " +
+                                 varName + "(tensor.get_device_index())",
+                             FindingAction::Flag);
         return;
     }
 
@@ -1319,17 +1324,19 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
 
     reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text, replacement);
     if (rewrite_mode_) {
-        SourceRange replaceRange = DS ? DS->getSourceRange() : VD->getSourceRange();
-        auto stmtEnd = Lexer::findLocationAfterToken(
-            replaceRange.getEnd(), tok::semi, SM, LO, false);
+        SourceRange replaceRange =
+            DS ? DS->getSourceRange() : VD->getSourceRange();
+        auto stmtEnd = Lexer::findLocationAfterToken(replaceRange.getEnd(),
+                                                     tok::semi, SM, LO, false);
         if (stmtEnd.isValid()) {
-            addReplacement(file_repls_, SM,
+            addReplacement(
+                file_repls_, SM,
                 CharSourceRange::getCharRange(replaceRange.getBegin(), stmtEnd),
                 replacement, LO);
         } else {
             addReplacement(file_repls_, SM,
-                CharSourceRange::getTokenRange(replaceRange),
-                replacement, LO);
+                           CharSourceRange::getTokenRange(replaceRange),
+                           replacement, LO);
         }
     }
 }
@@ -1352,10 +1359,9 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
             text.find("getCurrentCUDAStream") != std::string::npos ||
             text.find("getCurrentStream") != std::string::npos;
         if (isStream) {
-            reporter_.addFinding(FindingKind::CudaStream, SM,
-                                 SM.getSpellingLoc(loc), text,
-                                 "CUDA stream usage inside macro body",
-                                 FindingAction::Flag);
+            reporter_.addFinding(
+                FindingKind::CudaStream, SM, SM.getSpellingLoc(loc), text,
+                "CUDA stream usage inside macro body", FindingAction::Flag);
         }
         return;
     }
@@ -1379,11 +1385,11 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
             std::string deviceExpr = device_expr.empty() ? "-1" : device_expr;
 
             std::string replacement =
-                "void* " + varName + "_ptr = nullptr;\n" +
-                indent + "aoti_torch_get_current_cuda_stream(" + deviceExpr +
-                ", &" + varName + "_ptr);\n" +
-                indent + "const cudaStream_t " + varName +
-                " = reinterpret_cast<cudaStream_t>(" + varName + "_ptr);";
+                "void* " + varName + "_ptr = nullptr;\n" + indent +
+                "aoti_torch_get_current_cuda_stream(" + deviceExpr + ", &" +
+                varName + "_ptr);\n" + indent + "const cudaStream_t " +
+                varName + " = reinterpret_cast<cudaStream_t>(" + varName +
+                "_ptr);";
 
             reporter_.addFinding(FindingKind::CudaStream, SM, loc, stmtText,
                                  replacement);
@@ -1392,11 +1398,12 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
                     DS->getEndLoc(), tok::semi, SM, LO, false);
                 if (stmtEnd.isValid()) {
                     addReplacement(file_repls_, SM,
-                        CharSourceRange::getCharRange(DS->getBeginLoc(),
-                                                      stmtEnd),
-                        replacement, LO);
+                                   CharSourceRange::getCharRange(
+                                       DS->getBeginLoc(), stmtEnd),
+                                   replacement, LO);
                 } else {
-                    addReplacement(file_repls_, SM,
+                    addReplacement(
+                        file_repls_, SM,
                         CharSourceRange::getTokenRange(DS->getSourceRange()),
                         replacement, LO);
                 }
@@ -1425,12 +1432,13 @@ void registerManualMatchers(MatchFinder &finder,
         &guardCallback);
 
     finder.addMatcher(
-        declStmt(containsDeclaration(
-                     0, varDecl(hasInitializer(hasDescendant(
-                            callExpr(callee(functionDecl(hasAnyName(
-                                         "getCurrentCUDAStream",
-                                         "getCurrentStream"))))
-                                .bind("streamCall"))))))
+        declStmt(
+            containsDeclaration(
+                0,
+                varDecl(hasInitializer(hasDescendant(
+                    callExpr(callee(functionDecl(hasAnyName(
+                                 "getCurrentCUDAStream", "getCurrentStream"))))
+                        .bind("streamCall"))))))
             .bind("streamDeclStmt"),
         &streamCallback);
 

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <clang/AST/Expr.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/AST/Expr.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Lex/Lexer.h>
 #include <clang/Tooling/Core/Replacement.h>
@@ -45,8 +45,8 @@ inline std::string getIndent(clang::SourceLocation loc,
 }
 
 [[nodiscard]] inline bool isInProjectScope(const clang::SourceManager &SM,
-                             clang::SourceLocation Loc,
-                             llvm::StringRef projectRoot) {
+                                           clang::SourceLocation Loc,
+                                           llvm::StringRef projectRoot) {
     if (projectRoot.empty())
         return SM.isWrittenInMainFile(Loc);
     auto spelling = SM.getSpellingLoc(Loc);
@@ -64,8 +64,8 @@ inline void addReplacement(FileReplacements &fileRepls,
     auto &repls = fileRepls[R.getFilePath().str()];
     if (auto err = repls.add(R)) {
         llvm::errs() << "warning: conflicting replacement at "
-                     << R.getFilePath() << ":" << R.getOffset()
-                     << " -- " << llvm::toString(std::move(err)) << "\n";
+                     << R.getFilePath() << ":" << R.getOffset() << " -- "
+                     << llvm::toString(std::move(err)) << "\n";
     }
 }
 
@@ -77,18 +77,19 @@ inline void addReplacement(FileReplacements &fileRepls,
     auto &repls = fileRepls[R.getFilePath().str()];
     if (auto err = repls.add(R)) {
         llvm::errs() << "warning: conflicting replacement at "
-                     << R.getFilePath() << ":" << R.getOffset()
-                     << " -- " << llvm::toString(std::move(err)) << "\n";
+                     << R.getFilePath() << ":" << R.getOffset() << " -- "
+                     << llvm::toString(std::move(err)) << "\n";
     }
 }
 
 [[nodiscard]] inline bool isTensorType(const clang::Expr *obj) {
     if (!obj)
         return false;
-    auto objType =
-        obj->getType().getNonReferenceType().getUnqualifiedType();
+    auto objType = obj->getType().getNonReferenceType().getUnqualifiedType();
     if (objType->isPointerType())
-        objType = objType->getPointeeType().getNonReferenceType().getUnqualifiedType();
+        objType = objType->getPointeeType()
+                      .getNonReferenceType()
+                      .getUnqualifiedType();
     const auto *RD = objType->getAsCXXRecordDecl();
     if (!RD)
         return false;
@@ -103,11 +104,21 @@ inline std::string jsonEscape(std::string_view s) {
     out.reserve(s.size());
     for (unsigned char c : s) {
         switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
         default:
             if (c < 0x20) {
                 char buf[8];

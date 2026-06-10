@@ -6,8 +6,8 @@
 #include <clang/Frontend/FrontendAction.h>
 #include <clang/Rewrite/Core/Rewriter.h>
 #include <clang/Tooling/Refactoring/AtomicChange.h>
-#include <clang/Tooling/Transformer/Transformer.h>
 #include <clang/Tooling/Tooling.h>
+#include <clang/Tooling/Transformer/Transformer.h>
 #include <mutex>
 
 namespace stable_abi {
@@ -26,13 +26,13 @@ struct ActionOptions {
 };
 
 class StableAbiConsumer : public clang::ASTConsumer {
-public:
+  public:
     StableAbiConsumer(FileReplacements &fileRepls, Reporter &rep,
                       const ActionOptions &opts,
                       PreprocessorCallbacks *ppCallbacks = nullptr);
     void HandleTranslationUnit(clang::ASTContext &Context) override;
 
-private:
+  private:
     FileReplacements &file_repls_;
     ActionOptions opts_;
     PreprocessorCallbacks *pp_callbacks_;
@@ -44,7 +44,7 @@ private:
 };
 
 class StableAbiFrontendAction : public clang::ASTFrontendAction {
-public:
+  public:
     StableAbiFrontendAction(Reporter &reporter, const ActionOptions &opts)
         : reporter_(reporter), opts_(opts) {}
 
@@ -53,18 +53,16 @@ public:
                       llvm::StringRef InFile) override;
     void EndSourceFileAction() override;
 
-private:
+  private:
     clang::Rewriter rewriter_;
     Reporter &reporter_;
     FileReplacements file_repls_;
     ActionOptions opts_;
 };
 
-class StableAbiActionFactory
-    : public clang::tooling::FrontendActionFactory {
-public:
-    explicit StableAbiActionFactory(const ActionOptions &opts)
-        : opts_(opts) {}
+class StableAbiActionFactory : public clang::tooling::FrontendActionFactory {
+  public:
+    explicit StableAbiActionFactory(const ActionOptions &opts) : opts_(opts) {}
 
     std::unique_ptr<clang::FrontendAction> create() override {
         return std::make_unique<StableAbiFrontendAction>(reporter_, opts_);
@@ -72,13 +70,13 @@ public:
 
     Reporter &getReporter() { return reporter_; }
 
-private:
+  private:
     ActionOptions opts_;
     Reporter reporter_;
 };
 
 class ParseDiagConsumer : public clang::DiagnosticConsumer {
-public:
+  public:
     explicit ParseDiagConsumer(Reporter &reporter) : reporter_(reporter) {}
 
     void HandleDiagnostic(clang::DiagnosticsEngine::Level level,
@@ -102,7 +100,7 @@ public:
         reporter_.recordParseError(file);
     }
 
-private:
+  private:
     Reporter &reporter_;
 };
 

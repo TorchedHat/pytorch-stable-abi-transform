@@ -40,25 +40,25 @@ SOURCE_EXTENSIONS = {".cpp", ".cu", ".cuh", ".h", ".hpp"}
 # Map the C++ tool's FindingKind (JSON "kind" field) to blocker categories.
 # The kind field is authoritative — no string-matching on old_text.
 KIND_TO_BLOCKER = {
-    "FLAG":  "missing_api",
-    "INCL":  "unstable_include",
+    "FLAG": "missing_api",
+    "INCL": "unstable_include",
     "MACRO": "macro_in_body",
     "STYPE": "scalar_shorthand",
-    "STRM":  "cuda_stream",
+    "STRM": "cuda_stream",
     "GUARD": "device_guard",
-    "TYPE":  "type_decompose",
-    "FUNC":  "func_signature",
+    "TYPE": "type_decompose",
+    "FUNC": "func_signature",
 }
 
 BLOCKER_LABELS = {
-    "missing_api":       "No stable equivalent (CPU vec/BLAS, Vectorized, etc.)",
-    "unstable_include":  "Unstable #include",
-    "macro_in_body":     "Macro inside macro body (needs extraction)",
-    "scalar_shorthand":  "Scalar type shorthand in macro body",
-    "cuda_stream":       "CUDA stream (manual device_index wiring)",
-    "device_guard":      "DeviceGuard (manual constructor rewrite)",
-    "type_decompose":    "Type shorthand needs decomposition",
-    "func_signature":    "Function signature change",
+    "missing_api": "No stable equivalent (CPU vec/BLAS, Vectorized, etc.)",
+    "unstable_include": "Unstable #include",
+    "macro_in_body": "Macro inside macro body (needs extraction)",
+    "scalar_shorthand": "Scalar type shorthand in macro body",
+    "cuda_stream": "CUDA stream (manual device_index wiring)",
+    "device_guard": "DeviceGuard (manual constructor rewrite)",
+    "type_decompose": "Type shorthand needs decomposition",
+    "func_signature": "Function signature change",
 }
 
 HARD_BLOCKERS = {"missing_api"}
@@ -66,11 +66,11 @@ MODERATE_BLOCKERS = {"macro_in_body", "scalar_shorthand"}
 
 TIER_ORDER = ["green", "yellow", "orange", "red", "clean"]
 TIER_LABELS = {
-    "green":  "Auto-rewritable",
+    "green": "Auto-rewritable",
     "yellow": "Auto-rewrite + small manual fixes",
     "orange": "Macro restructuring required",
-    "red":    "Blocked on PyTorch stable API expansion",
-    "clean":  "No findings",
+    "red": "Blocked on PyTorch stable API expansion",
+    "clean": "No findings",
 }
 
 
@@ -92,13 +92,10 @@ class FileStatus:
 
 
 def run_audit(project_root: str, source_dir: str, jobs: int = 0) -> dict:
-    cmd = [TOOL, "--mode=audit", "--format=json",
-           f"--project-root={source_dir}"]
+    cmd = [TOOL, "--mode=audit", "--format=json", f"--project-root={source_dir}"]
     if jobs > 0:
         cmd.append(f"--jobs={jobs}")
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, cwd=project_root, timeout=7200
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root, timeout=7200)
     if result.returncode != 0:
         print(f"audit failed (exit {result.returncode}):", file=sys.stderr)
         if result.stderr:
@@ -116,8 +113,7 @@ def discover_sources(root: str) -> set[str]:
     }
 
 
-def analyze(audit: dict, source_root: str,
-            all_files: set[str]) -> dict[str, FileStatus]:
+def analyze(audit: dict, source_root: str, all_files: set[str]) -> dict[str, FileStatus]:
     status: dict[str, FileStatus] = {}
 
     for finding in audit["findings"]:
@@ -137,8 +133,7 @@ def analyze(audit: dict, source_root: str,
     return status
 
 
-def load_plan_groups(plan_json_path: str, source_root: str
-                     ) -> dict[str, list[str]] | None:
+def load_plan_groups(plan_json_path: str, source_root: str) -> dict[str, list[str]] | None:
     """Load dependency-aware PR groups from --mode=plan JSON output."""
     with open(plan_json_path) as f:
         plan = json.load(f)
@@ -155,9 +150,12 @@ def load_plan_groups(plan_json_path: str, source_root: str
     return groups if groups else None
 
 
-def build_report(status: dict[str, FileStatus], audit: dict,
-                 source_label: str,
-                 plan_groups: dict[str, list[str]] | None = None) -> dict:
+def build_report(
+    status: dict[str, FileStatus],
+    audit: dict,
+    source_label: str,
+    plan_groups: dict[str, list[str]] | None = None,
+) -> dict:
     tiers = Counter(fs.tier for fs in status.values())
     blockers = Counter()
     for fs in status.values():
@@ -165,14 +163,15 @@ def build_report(status: dict[str, FileStatus], audit: dict,
             blockers[b] += 1
 
     total = len(status)
-    needs_work = sum(1 for fs in status.values()
-                     if fs.rewrites > 0 or fs.flags > 0)
+    needs_work = sum(1 for fs in status.values() if fs.rewrites > 0 or fs.flags > 0)
     auto_ready = tiers.get("green", 0)
 
     if plan_groups is not None:
-        green_dirs = {k: v for k, v in plan_groups.items()
-                      if any(status.get(f, FileStatus()).tier == "green"
-                             for f in v)}
+        green_dirs = {
+            k: v
+            for k, v in plan_groups.items()
+            if any(status.get(f, FileStatus()).tier == "green" for f in v)
+        }
         grouping_method = "plan"
     else:
         green_dirs: dict[str, list[str]] = {}
@@ -222,14 +221,19 @@ def print_text(r: dict):
     print(f"  Progress:           {format_score(r)}")
     print(f"  Total files:        {total}")
     print(f"  Need migration:     {r['needs_work']}")
-    print(f"  Auto-rewritable:    {r['total_rewrites']} findings across "
-          f"{r['tiers']['green']} files")
-    print(f"  Manual review:      {r['total_flags']} findings across "
-          f"{r['tiers']['yellow'] + r['tiers']['orange'] + r['tiers']['red']}"
-          f" files")
+    print(
+        f"  Auto-rewritable:    {r['total_rewrites']} findings across {r['tiers']['green']} files"
+    )
+    print(
+        f"  Manual review:      {r['total_flags']} findings across "
+        f"{r['tiers']['yellow'] + r['tiers']['orange'] + r['tiers']['red']}"
+        f" files"
+    )
     if r["parse_errors"]:
-        print(f"  Parse errors:       {r['parse_errors']} "
-              "(completeness not guaranteed — run --mode=verify after rewriting)")
+        print(
+            f"  Parse errors:       {r['parse_errors']} "
+            "(completeness not guaranteed — run --mode=verify after rewriting)"
+        )
     print()
 
     if r["needs_work"] == 0:
@@ -268,13 +272,10 @@ def print_text(r: dict):
         print("  " + "-" * 50)
         for d, files in sorted(r["green_dirs"].items()):
             pr_num += 1
-            n_rewrites = sum(status[f].rewrites for f in files
-                             if f in status)
-            is_header = all(Path(f).suffix in {".h", ".hpp", ".cuh"}
-                            for f in files)
+            n_rewrites = sum(status[f].rewrites for f in files if f in status)
+            is_header = all(Path(f).suffix in {".h", ".hpp", ".cuh"} for f in files)
             ftype = "headers" if is_header else "files"
-            print(f"  PR {pr_num:2d}: {label}/{d}/ — "
-                  f"{len(files)} {ftype}, {n_rewrites} rewrites")
+            print(f"  PR {pr_num:2d}: {label}/{d}/ — {len(files)} {ftype}, {n_rewrites} rewrites")
 
     if r["yellow_files"]:
         print()
@@ -283,8 +284,7 @@ def print_text(r: dict):
         for f in r["yellow_files"]:
             fs = status[f]
             pr_num += 1
-            print(f"  PR {pr_num:2d}: {label}/{f} — "
-                  f"{fs.rewrites} auto + {fs.flags} manual")
+            print(f"  PR {pr_num:2d}: {label}/{f} — {fs.rewrites} auto + {fs.flags} manual")
 
     print()
     print(f"  Actionable PRs: {pr_num}")
@@ -317,8 +317,10 @@ def print_markdown(r: dict):
     print()
 
     if r["parse_errors"]:
-        print("> **Note:** Parse errors mean some findings may be missing. "
-              "Run `--mode=verify` after rewriting to confirm completeness.\n")
+        print(
+            "> **Note:** Parse errors mean some findings may be missing. "
+            "Run `--mode=verify` after rewriting to confirm completeness.\n"
+        )
 
     print("## Tier Breakdown\n")
     print("| Tier | Files | Description |")
@@ -341,14 +343,17 @@ def print_markdown(r: dict):
         grouping = r.get("grouping_method", "directory")
         print("## Green Tier PRs\n")
         if grouping == "directory":
-            print("*Grouped by directory (approximate). Use `--plan-json` "
-                  "for dependency-aware grouping.*\n")
-        print("Auto-rewritable. Run `stable-abi-transform --mode=rewrite`, "
-              "then `--mode=verify` to confirm.\n")
+            print(
+                "*Grouped by directory (approximate). Use `--plan-json` "
+                "for dependency-aware grouping.*\n"
+            )
+        print(
+            "Auto-rewritable. Run `stable-abi-transform --mode=rewrite`, "
+            "then `--mode=verify` to confirm.\n"
+        )
         for d, files in sorted(r["green_dirs"].items()):
             pr_num += 1
-            n_rewrites = sum(status[f].rewrites for f in files
-                             if f in status)
+            n_rewrites = sum(status[f].rewrites for f in files if f in status)
             print(f"### PR {pr_num}: `{label}/{d}/`")
             print(f"{len(files)} files, {n_rewrites} auto-rewrites\n")
             for f in sorted(files):
@@ -369,12 +374,11 @@ def print_markdown(r: dict):
     print(f"**Actionable PRs: {pr_num}** (green + yellow)")
     red = r["tiers"]["red"]
     if red:
-        print(f"\nRed tier ({red} files) blocked on PyTorch stable API "
-              "expansion — track upstream.")
-    print(f"\nAfter rewriting, verify with: "
-          "`stable-abi-transform --mode=verify --pytorch-root=<path>`")
-    print(f"\nFor dependency-aware PR sequencing: "
-          "`stable-abi-transform --mode=plan`")
+        print(f"\nRed tier ({red} files) blocked on PyTorch stable API expansion — track upstream.")
+    print(
+        "\nAfter rewriting, verify with: `stable-abi-transform --mode=verify --pytorch-root=<path>`"
+    )
+    print("\nFor dependency-aware PR sequencing: `stable-abi-transform --mode=plan`")
 
 
 def print_json(r: dict):
@@ -394,8 +398,12 @@ def print_json(r: dict):
         "grouping_method": r["grouping_method"],
         "actionable_prs": len(r["green_dirs"]) + len(r["yellow_files"]),
         "files": {
-            f: {"tier": fs.tier, "rewrites": fs.rewrites, "flags": fs.flags,
-                "blockers": sorted(fs.blockers)}
+            f: {
+                "tier": fs.tier,
+                "rewrites": fs.rewrites,
+                "flags": fs.flags,
+                "blockers": sorted(fs.blockers),
+            }
             for f, fs in sorted(r["file_status"].items())
         },
     }
@@ -405,22 +413,24 @@ def print_json(r: dict):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Measure stable ABI migration progress for a PyTorch "
-                    "C++ extension project")
-    parser.add_argument("project_root", nargs="?",
-                        help="Path to the project root")
-    parser.add_argument("--source-dir",
-                        help="Source subdirectory (relative to project root, "
-                        "or absolute path)")
-    parser.add_argument("--audit-json",
-                        help="Pre-computed audit JSON (skip running the tool)")
-    parser.add_argument("--jobs", type=int, default=0,
-                        help="Parallel threads for audit (0=auto)")
-    parser.add_argument("--plan-json",
-                        help="Pre-computed plan JSON (--mode=plan --format=json) "
-                        "for dependency-aware PR grouping")
-    parser.add_argument("--format", choices=["text", "markdown", "json"],
-                        default="text", help="Output format (default: text)")
+        description="Measure stable ABI migration progress for a PyTorch C++ extension project"
+    )
+    parser.add_argument("project_root", nargs="?", help="Path to the project root")
+    parser.add_argument(
+        "--source-dir", help="Source subdirectory (relative to project root, or absolute path)"
+    )
+    parser.add_argument("--audit-json", help="Pre-computed audit JSON (skip running the tool)")
+    parser.add_argument("--jobs", type=int, default=0, help="Parallel threads for audit (0=auto)")
+    parser.add_argument(
+        "--plan-json",
+        help="Pre-computed plan JSON (--mode=plan --format=json) for dependency-aware PR grouping",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["text", "markdown", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
     args = parser.parse_args()
 
     if not args.audit_json and not args.project_root:
@@ -456,16 +466,17 @@ def main():
     if args.plan_json:
         plan_groups = load_plan_groups(args.plan_json, source_root)
         if plan_groups is None:
-            print("warning: --plan-json contained no partitions, "
-                  "falling back to directory grouping", file=sys.stderr)
+            print(
+                "warning: --plan-json contained no partitions, falling back to directory grouping",
+                file=sys.stderr,
+            )
 
     file_status = analyze(audit, source_root, all_files)
-    report = build_report(file_status, audit,
-                          os.path.basename(source_root) or "project",
-                          plan_groups)
+    report = build_report(
+        file_status, audit, os.path.basename(source_root) or "project", plan_groups
+    )
 
-    {"text": print_text, "markdown": print_markdown, "json": print_json
-     }[args.format](report)
+    {"text": print_text, "markdown": print_markdown, "json": print_json}[args.format](report)
 
     sys.exit(1 if report["total_flags"] > 0 else 0)
 

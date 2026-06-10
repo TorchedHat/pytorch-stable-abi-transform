@@ -11,6 +11,18 @@ cmake -GNinja -B build -S . && ninja -C build -j30
 
 Requires: LLVM 19, clang-cpp, g++-13, C++20.
 
+## Contributing
+
+```bash
+# 1. Build and test
+ninja -C build -j30
+RESOURCE_DIR=/usr/lib/clang/19 bash test/run_tests.sh
+
+# 2. Format and lint (before committing)
+bash scripts/fmt.sh    # auto-fix formatting
+bash scripts/lint.sh   # verify CI will pass (includes clang-tidy if built)
+```
+
 ## Usage
 
 ### With YAML config (recommended)
