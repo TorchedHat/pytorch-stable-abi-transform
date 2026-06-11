@@ -427,6 +427,9 @@ runWithConfig(stable_abi::Config &cfg,
                         "(parallel rewrite is not yet safe)\n";
     }
 
+    std::set<std::string> incompleteFiles;
+    std::mutex incompleteFilesMutex;
+
     stable_abi::ActionOptions actionOpts{
         .write_mode = writeMode,
         .project_root = projectRoot,
@@ -434,6 +437,8 @@ runWithConfig(stable_abi::Config &cfg,
         .include_graph = (cfg.mode == Mode::Plan) ? &includeGraph : nullptr,
         .include_graph_mutex = parallel ? &includeGraphMutex : nullptr,
         .write_mutex = parallel ? &writeMutex : nullptr,
+        .incomplete_files = &incompleteFiles,
+        .incomplete_files_mutex = &incompleteFilesMutex,
     };
     auto Factory =
         std::make_unique<stable_abi::StableAbiActionFactory>(actionOpts);
@@ -451,7 +456,10 @@ runWithConfig(stable_abi::Config &cfg,
             pool.async([&, source]() {
                 clang::tooling::ClangTool tool(*db, {source});
                 tool.appendArgumentsAdjuster(argsAdjuster);
-                stable_abi::ParseDiagConsumer diag(Factory->getReporter());
+                stable_abi::ParseDiagConsumer diag(Factory->getReporter(),
+                                                   &incompleteFiles,
+                                                   &incompleteFilesMutex);
+                diag.setMainFile(source);
                 tool.setDiagnosticConsumer(&diag);
                 int r = tool.run(Factory.get());
                 if (r != 0)
@@ -467,7 +475,10 @@ runWithConfig(stable_abi::Config &cfg,
     } else {
         clang::tooling::ClangTool Tool(*db, sources);
         Tool.appendArgumentsAdjuster(argsAdjuster);
-        stable_abi::ParseDiagConsumer diagConsumer(Factory->getReporter());
+        stable_abi::ParseDiagConsumer diagConsumer(
+            Factory->getReporter(), &incompleteFiles, &incompleteFilesMutex);
+        if (sources.size() == 1)
+            diagConsumer.setMainFile(sources[0]);
         Tool.setDiagnosticConsumer(&diagConsumer);
         result = Tool.run(Factory.get());
     }
@@ -528,6 +539,7 @@ runWithConfig(stable_abi::Config &cfg,
     } else {
         reporter.printReport(projectRoot);
         reporter.printSummary();
+        reporter.printFileReport(projectRoot, incompleteFiles);
     }
     reporter.printParseWarnings();
 
