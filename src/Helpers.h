@@ -5,6 +5,7 @@
 #include <clang/AST/Expr.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Lex/Lexer.h>
+#include <clang/Tooling/ArgumentsAdjusters.h>
 #include <clang/Tooling/Core/Replacement.h>
 #include <llvm/ADT/StringRef.h>
 #include <map>
@@ -131,6 +132,89 @@ inline std::string jsonEscape(std::string_view s) {
         }
     }
     return out;
+}
+
+// Strip gcc/nvcc-specific flags from compilation database commands.
+// Keeps: -D*, -I*, -isystem, -std=*, -m* (arch), -W*
+// Strips: compiler paths, -o, -c, -fPIC, nvcc-specific flags
+inline clang::tooling::ArgumentsAdjuster makeStripNonClangAdjuster() {
+    return [](const clang::tooling::CommandLineArguments &Args,
+              llvm::StringRef /*Filename*/) {
+        clang::tooling::CommandLineArguments result;
+        bool skipNext = false;
+        for (size_t i = 0; i < Args.size(); ++i) {
+            if (skipNext) {
+                skipNext = false;
+                continue;
+            }
+            llvm::StringRef a(Args[i]);
+            // Skip compiler path (first arg or path-like)
+            if (i == 0 &&
+                (a.contains('/') || a.ends_with("g++") || a.ends_with("gcc") ||
+                 a.ends_with("nvcc") || a.ends_with("clang++")))
+                continue;
+            // Skip output/object flags and their arguments
+            if (a == "-o" || a == "-c" || a == "-MF" || a == "-MT" ||
+                a == "-MQ") {
+                skipNext = true;
+                continue;
+            }
+            // Skip nvcc-specific flags
+            if (a.starts_with("-Xcudafe") || a.starts_with("--expt-") ||
+                a.starts_with("-forward-unknown") ||
+                a.starts_with("-gencode") || a.starts_with("--generate-code") ||
+                a == "-x" || a.starts_with("-Xcompiler") ||
+                a.starts_with("--diag_suppress"))
+                continue;
+            if (a.starts_with("arch=") || a.starts_with("code="))
+                continue;
+            // Skip -x argument value (e.g., "cu" after "-x")
+            if (i > 0 && Args[i - 1] == "-x")
+                continue;
+            // Skip compilation-only flags
+            if (a == "-fPIC" || a == "-fPIE" || a == "-shared" || a == "-c")
+                continue;
+            // Keep everything else
+            result.push_back(Args[i]);
+        }
+        return result;
+    };
+}
+
+// Add tool-specific flags: CUDA handling, arch, resource-dir, error limit.
+inline clang::tooling::ArgumentsAdjuster
+makeToolAdjuster(const std::string &resourceDir, const std::string &cudaPath,
+                 bool hasArchFlag) {
+    return [resourceDir, cudaPath,
+            hasArchFlag](const clang::tooling::CommandLineArguments &Args,
+                         llvm::StringRef Filename) {
+        clang::tooling::CommandLineArguments result = Args;
+        result.push_back("-ferror-limit=0");
+        if (!hasArchFlag)
+            result.push_back("-march=native");
+        if (!resourceDir.empty()) {
+            result.push_back("-resource-dir");
+            result.push_back(resourceDir);
+        }
+        if (Filename.ends_with(".cu") || Filename.ends_with(".cuh")) {
+            if (Filename.ends_with(".cuh")) {
+                auto it =
+                    std::find(result.begin(), result.end(), Filename.str());
+                if (it != result.end())
+                    result.insert(it, "-xcuda");
+                else
+                    result.push_back("-xcuda");
+            }
+            result.push_back("--cuda-host-only");
+            result.push_back("-nocudalib");
+            result.push_back("-nogpulib");
+            result.push_back("-Wno-unknown-cuda-version");
+            result.push_back("-DUSE_CUDA");
+            if (!cudaPath.empty())
+                result.push_back("--cuda-path=" + cudaPath);
+        }
+        return result;
+    };
 }
 
 inline const std::vector<std::string> &getUnstablePatterns() {

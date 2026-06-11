@@ -8,9 +8,9 @@
 void kernel(torch::stable::Tensor& out, const torch::stable::Tensor& input) {
     STD_TORCH_CHECK(input.is_contiguous(), "must be contiguous");
     const torch::stable::accelerator::DeviceGuard device_guard(input.get_device_index());
-    void* stream_ptr = nullptr;
-    aoti_torch_get_current_cuda_stream(input.get_device_index(), &stream_ptr);
-    const cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+    StreamHandle stream_handle = nullptr;
+    aoti_torch_get_current_stream(input.get_device_index(), &stream_handle);
+    const cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_handle);
     float* ptr = input.mutable_data_ptr<float>();
     auto result = torch::stable::clone(input);
 }

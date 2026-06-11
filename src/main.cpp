@@ -386,32 +386,31 @@ runWithConfig(stable_abi::Config &cfg,
     }
 
     auto pytorchIncs = stable_abi::pytorchIncludePaths(cfg.pytorch_root);
-    auto argsAdjuster = [&resourceDir, &pytorchIncs](
-                            const clang::tooling::CommandLineArguments &Args,
-                            llvm::StringRef Filename) {
-        clang::tooling::CommandLineArguments AdjustedArgs = Args;
-        if (Filename.ends_with(".cu"))
-            AdjustedArgs.push_back("--cuda-host-only");
-        if (Filename.ends_with(".cuh")) {
-            // .cuh triggers Clang's CUDA driver which creates
-            // device+host compilation pairs and fails with
-            // "expected exactly one compiler job". Force C++
-            // since we only analyze host-side API usage.
-            auto it = std::find(AdjustedArgs.begin(), AdjustedArgs.end(),
-                                Filename.str());
-            if (it != AdjustedArgs.end())
-                AdjustedArgs.insert(it, "-xc++");
-            else
-                AdjustedArgs.push_back("-xc++");
-        }
-        if (!resourceDir.empty()) {
-            AdjustedArgs.push_back("-resource-dir");
-            AdjustedArgs.push_back(resourceDir);
-        }
-        for (const auto &inc : pytorchIncs)
-            AdjustedArgs.push_back("-I" + inc);
-        return AdjustedArgs;
-    };
+    std::string cudaPath;
+    if (!cfg.cuda_include.empty()) {
+        llvm::SmallString<256> cp(cfg.cuda_include);
+        llvm::sys::path::remove_filename(cp);
+        cudaPath = std::string(cp);
+    }
+    bool hasArchFlag = false;
+    for (const auto &f : cfg.compiler_flags) {
+        if (llvm::StringRef(f).starts_with("-march") ||
+            llvm::StringRef(f).starts_with("-mavx") ||
+            llvm::StringRef(f).starts_with("-msse"))
+            hasArchFlag = true;
+    }
+
+    auto stripAdjuster = stable_abi::makeStripNonClangAdjuster();
+    auto toolAdjuster =
+        stable_abi::makeToolAdjuster(resourceDir, cudaPath, hasArchFlag);
+    auto pytorchAdjuster =
+        [pytorchIncs](const clang::tooling::CommandLineArguments &Args,
+                      llvm::StringRef /*Filename*/) {
+            auto result = Args;
+            for (const auto &inc : pytorchIncs)
+                result.push_back("-I" + inc);
+            return result;
+        };
 
     stable_abi::IncludeGraph includeGraph;
     std::mutex includeGraphMutex;
@@ -455,7 +454,9 @@ runWithConfig(stable_abi::Config &cfg,
         for (const auto &source : sources) {
             pool.async([&, source]() {
                 clang::tooling::ClangTool tool(*db, {source});
-                tool.appendArgumentsAdjuster(argsAdjuster);
+                tool.appendArgumentsAdjuster(stripAdjuster);
+                tool.appendArgumentsAdjuster(toolAdjuster);
+                tool.appendArgumentsAdjuster(pytorchAdjuster);
                 stable_abi::ParseDiagConsumer diag(Factory->getReporter(),
                                                    &incompleteFiles,
                                                    &incompleteFilesMutex);
@@ -474,7 +475,9 @@ runWithConfig(stable_abi::Config &cfg,
         result = toolResult.load();
     } else {
         clang::tooling::ClangTool Tool(*db, sources);
-        Tool.appendArgumentsAdjuster(argsAdjuster);
+        Tool.appendArgumentsAdjuster(stripAdjuster);
+        Tool.appendArgumentsAdjuster(toolAdjuster);
+        Tool.appendArgumentsAdjuster(pytorchAdjuster);
         stable_abi::ParseDiagConsumer diagConsumer(
             Factory->getReporter(), &incompleteFiles, &incompleteFilesMutex);
         if (sources.size() == 1)
