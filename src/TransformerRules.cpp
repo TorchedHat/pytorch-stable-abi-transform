@@ -495,49 +495,43 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
 static void addMethodToFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
                                  bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite,
-                    projectRoot](const MatchFinder::MatchResult &R)
-        -> llvm::Expected<SmallVector<Edit, 1>> {
-        const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("methodCall");
-        if (!CE)
-            return noEdits();
+    for (const auto &rule : kMethodToFreeFuncRules) {
+        std::string methodName(rule.from);
+        std::string funcName(rule.to);
 
-        auto cl = classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
-        if (cl.kind == LocClass::Skip)
-            return noEdits();
+        auto editGen = [&rep, rewrite, projectRoot, methodName,
+                        funcName](const MatchFinder::MatchResult &R)
+            -> llvm::Expected<SmallVector<Edit, 1>> {
+            const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("m2f_call");
+            if (!CE)
+                return noEdits();
 
-        const auto &SM = *R.SourceManager;
-        const auto &LO = R.Context->getLangOpts();
+            auto cl =
+                classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
+            if (cl.kind == LocClass::Skip)
+                return noEdits();
 
-        const auto *ME = R.Nodes.getNodeAs<MemberExpr>("methodMember");
-        if (!ME)
-            return noEdits();
-        auto methodName = ME->getMemberDecl()->getNameAsString();
+            const auto *obj = CE->getImplicitObjectArgument();
+            if (!isTensorType(obj))
+                return noEdits();
 
-        const auto *obj = CE->getImplicitObjectArgument();
-        if (!isTensorType(obj))
-            return noEdits();
+            const auto &SM = *R.SourceManager;
+            const auto &LO = R.Context->getLangOpts();
 
-        for (const auto &rule : kMethodToFreeFuncRules) {
-            if (methodName != rule.from)
-                continue;
-
-            std::string replacement = std::string(rule.to) + "(...)";
             if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc,
-                                methodName, replacement))
+                                methodName, funcName + "(...)"))
                 return noEdits();
 
             auto objText = getSourceText(obj->getSourceRange(), SM, LO);
-            std::string argsText;
-            auto argsRange = callArgs("methodCall")(R);
-            if (argsRange)
-                argsText = Lexer::getSourceText(*argsRange, SM, LO).str();
-            else
+            std::string replacement = funcName + "(" + objText;
+            auto argsRange = callArgs("m2f_call")(R);
+            if (argsRange) {
+                auto argsText = Lexer::getSourceText(*argsRange, SM, LO).str();
+                if (!argsText.empty())
+                    replacement += ", " + argsText;
+            } else {
                 llvm::consumeError(argsRange.takeError());
-
-            replacement = std::string(rule.to) + "(" + objText;
-            if (!argsText.empty())
-                replacement += ", " + argsText;
+            }
             replacement += ")";
 
             auto fullText = getSourceText(CE->getSourceRange(), SM, LO);
@@ -547,21 +541,14 @@ static void addMethodToFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
                 return noEdits();
 
             return singleEdit(CE->getSourceRange(), replacement);
-        }
-        return noEdits();
-    };
+        };
 
-    std::vector<std::string> methodNames;
-    for (const auto &rule : kMethodToFreeFuncRules)
-        methodNames.push_back(std::string(rule.from));
-
-    rules.push_back(makeRule(
-        cxxMemberCallExpr(
-            loc.stmt, callee(memberExpr(member(cxxMethodDecl(hasAnyNameFromVec(
-                                            std::move(methodNames)))))
-                                 .bind("methodMember")))
-            .bind("methodCall"),
-        EditGenerator(editGen)));
+        rules.push_back(makeRule(
+            cxxMemberCallExpr(loc.stmt, callee(memberExpr(member(cxxMethodDecl(
+                                            hasName(methodName))))))
+                .bind("m2f_call"),
+            EditGenerator(editGen)));
+    }
 }
 
 // ---------------------------------------------------------------------------
