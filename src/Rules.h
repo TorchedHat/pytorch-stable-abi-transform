@@ -333,6 +333,7 @@ struct MethodRenameRule {
 inline constexpr std::array kMethodRenameRules = {
     MethodRenameRule{"dtype", "scalar_type"},
     MethodRenameRule{"itemsize", "element_size"},
+    MethodRenameRule{"data_ptr", "mutable_data_ptr"},
 };
 
 struct ComparisonMacroRule {
@@ -477,9 +478,18 @@ inline constexpr std::array kNamespaceRules = {
     NamespaceRule{"c10::cuda::", "torch::stable::accelerator::"},
 };
 
-// Patterns handled by AST matchers not in rule tables.
-inline constexpr std::array kAstMatcherPatterns = {
-    std::string_view(".data_ptr<"),
-};
+// Stable accelerator API names. Auto-generated from accelerator.h and shim.h.
+// Used by DeviceGuard and CudaStream callbacks.
+inline constexpr std::string_view kAccelerator_device_index_type =
+    "DeviceIndex";
+inline constexpr std::string_view kAccelerator_guard_class =
+    "torch::stable::accelerator::DeviceGuard";
+inline constexpr std::string_view kAccelerator_stream_class =
+    "torch::stable::accelerator::Stream";
+inline constexpr std::string_view kAccelerator_stream_func =
+    "aoti_torch_get_current_stream";
+inline constexpr std::string_view kAccelerator_stream_handle_type =
+    "StreamHandle";
+inline constexpr std::string_view kAccelerator_stream_id_type = "StreamId";
 
 } // namespace stable_abi

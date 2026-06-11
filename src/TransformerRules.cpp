@@ -1311,7 +1311,7 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
 
     if (deviceExpr.empty()) {
         reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text,
-                             "torch::stable::accelerator::DeviceGuard " +
+                             std::string(kAccelerator_guard_class) + " " +
                                  varName + "(tensor.get_device_index())",
                              FindingAction::Flag);
         return;
@@ -1319,8 +1319,8 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
 
     last_device_expr_ = deviceExpr;
 
-    std::string replacement = "const torch::stable::accelerator::DeviceGuard " +
-                              varName + "(" + deviceExpr + ");";
+    std::string replacement = "const " + std::string(kAccelerator_guard_class) +
+                              " " + varName + "(" + deviceExpr + ");";
 
     reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text, replacement);
     if (rewrite_mode_) {
@@ -1385,11 +1385,12 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
             std::string deviceExpr = device_expr.empty() ? "-1" : device_expr;
 
             std::string replacement =
-                "StreamHandle " + varName + "_handle = nullptr;\n" + indent +
-                "aoti_torch_get_current_stream(" + deviceExpr + ", &" +
-                varName + "_handle);\n" + indent + "const cudaStream_t " +
-                varName + " = reinterpret_cast<cudaStream_t>(" + varName +
-                "_handle);";
+                std::string(kAccelerator_stream_handle_type) + " " + varName +
+                "_handle = nullptr;\n" + indent +
+                std::string(kAccelerator_stream_func) + "(" + deviceExpr +
+                ", &" + varName + "_handle);\n" + indent +
+                "const cudaStream_t " + varName +
+                " = reinterpret_cast<cudaStream_t>(" + varName + "_handle);";
 
             reporter_.addFinding(FindingKind::CudaStream, SM, loc, stmtText,
                                  replacement);
@@ -1412,10 +1413,10 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
         }
     }
 
-    reporter_.addFinding(
-        FindingKind::CudaStream, SM, loc, text,
-        "aoti_torch_get_current_stream(device_index, &stream_ptr)",
-        FindingAction::Flag);
+    reporter_.addFinding(FindingKind::CudaStream, SM, loc, text,
+                         std::string(kAccelerator_stream_func) +
+                             "(device_index, &stream_handle)",
+                         FindingAction::Flag);
 }
 
 void registerManualMatchers(MatchFinder &finder,
