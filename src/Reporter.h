@@ -52,6 +52,8 @@ class Reporter {
 
     void printReport(std::string_view projectRoot = "") const;
     void printSummary() const;
+    void printFileReport(std::string_view projectRoot,
+                         const std::set<std::string> &incompleteFiles) const;
     void printJson() const;
 
     void suppressRedundantFlags();

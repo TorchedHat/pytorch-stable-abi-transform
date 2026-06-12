@@ -71,9 +71,9 @@ void multi_ptr(torch::stable::Tensor& a, const torch::stable::Tensor& b) {
 // (from nearly every vLLM kernel launcher)
 void guarded_launch(const torch::stable::Tensor& input, torch::stable::Tensor& output) {
     const torch::stable::accelerator::DeviceGuard device_guard(input.get_device_index());
-    void* stream_ptr = nullptr;
-    aoti_torch_get_current_cuda_stream(input.get_device_index(), &stream_ptr);
-    const cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+    StreamHandle stream_handle = nullptr;
+    aoti_torch_get_current_stream(input.get_device_index(), &stream_handle);
+    const cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_handle);
     auto dt = input.scalar_type();
     auto result = torch::stable::clone(input);
 }

@@ -8,6 +8,7 @@
 #include <clang/Tooling/CommonOptionsParser.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+#include <fstream>
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
@@ -385,32 +386,31 @@ runWithConfig(stable_abi::Config &cfg,
     }
 
     auto pytorchIncs = stable_abi::pytorchIncludePaths(cfg.pytorch_root);
-    auto argsAdjuster = [&resourceDir, &pytorchIncs](
-                            const clang::tooling::CommandLineArguments &Args,
-                            llvm::StringRef Filename) {
-        clang::tooling::CommandLineArguments AdjustedArgs = Args;
-        if (Filename.ends_with(".cu"))
-            AdjustedArgs.push_back("--cuda-host-only");
-        if (Filename.ends_with(".cuh")) {
-            // .cuh triggers Clang's CUDA driver which creates
-            // device+host compilation pairs and fails with
-            // "expected exactly one compiler job". Force C++
-            // since we only analyze host-side API usage.
-            auto it = std::find(AdjustedArgs.begin(), AdjustedArgs.end(),
-                                Filename.str());
-            if (it != AdjustedArgs.end())
-                AdjustedArgs.insert(it, "-xc++");
-            else
-                AdjustedArgs.push_back("-xc++");
-        }
-        if (!resourceDir.empty()) {
-            AdjustedArgs.push_back("-resource-dir");
-            AdjustedArgs.push_back(resourceDir);
-        }
-        for (const auto &inc : pytorchIncs)
-            AdjustedArgs.push_back("-I" + inc);
-        return AdjustedArgs;
-    };
+    std::string cudaPath;
+    if (!cfg.cuda_include.empty()) {
+        llvm::SmallString<256> cp(cfg.cuda_include);
+        llvm::sys::path::remove_filename(cp);
+        cudaPath = std::string(cp);
+    }
+    bool hasArchFlag = false;
+    for (const auto &f : cfg.compiler_flags) {
+        if (llvm::StringRef(f).starts_with("-march") ||
+            llvm::StringRef(f).starts_with("-mavx") ||
+            llvm::StringRef(f).starts_with("-msse"))
+            hasArchFlag = true;
+    }
+
+    auto stripAdjuster = stable_abi::makeStripNonClangAdjuster();
+    auto toolAdjuster =
+        stable_abi::makeToolAdjuster(resourceDir, cudaPath, hasArchFlag);
+    auto pytorchAdjuster =
+        [pytorchIncs](const clang::tooling::CommandLineArguments &Args,
+                      llvm::StringRef /*Filename*/) {
+            auto result = Args;
+            for (const auto &inc : pytorchIncs)
+                result.push_back("-I" + inc);
+            return result;
+        };
 
     stable_abi::IncludeGraph includeGraph;
     std::mutex includeGraphMutex;
@@ -426,6 +426,9 @@ runWithConfig(stable_abi::Config &cfg,
                         "(parallel rewrite is not yet safe)\n";
     }
 
+    std::set<std::string> incompleteFiles;
+    std::mutex incompleteFilesMutex;
+
     stable_abi::ActionOptions actionOpts{
         .write_mode = writeMode,
         .project_root = projectRoot,
@@ -433,6 +436,8 @@ runWithConfig(stable_abi::Config &cfg,
         .include_graph = (cfg.mode == Mode::Plan) ? &includeGraph : nullptr,
         .include_graph_mutex = parallel ? &includeGraphMutex : nullptr,
         .write_mutex = parallel ? &writeMutex : nullptr,
+        .incomplete_files = &incompleteFiles,
+        .incomplete_files_mutex = &incompleteFilesMutex,
     };
     auto Factory =
         std::make_unique<stable_abi::StableAbiActionFactory>(actionOpts);
@@ -449,8 +454,13 @@ runWithConfig(stable_abi::Config &cfg,
         for (const auto &source : sources) {
             pool.async([&, source]() {
                 clang::tooling::ClangTool tool(*db, {source});
-                tool.appendArgumentsAdjuster(argsAdjuster);
-                stable_abi::ParseDiagConsumer diag(Factory->getReporter());
+                tool.appendArgumentsAdjuster(stripAdjuster);
+                tool.appendArgumentsAdjuster(toolAdjuster);
+                tool.appendArgumentsAdjuster(pytorchAdjuster);
+                stable_abi::ParseDiagConsumer diag(Factory->getReporter(),
+                                                   &incompleteFiles,
+                                                   &incompleteFilesMutex);
+                diag.setMainFile(source);
                 tool.setDiagnosticConsumer(&diag);
                 int r = tool.run(Factory.get());
                 if (r != 0)
@@ -465,8 +475,13 @@ runWithConfig(stable_abi::Config &cfg,
         result = toolResult.load();
     } else {
         clang::tooling::ClangTool Tool(*db, sources);
-        Tool.appendArgumentsAdjuster(argsAdjuster);
-        stable_abi::ParseDiagConsumer diagConsumer(Factory->getReporter());
+        Tool.appendArgumentsAdjuster(stripAdjuster);
+        Tool.appendArgumentsAdjuster(toolAdjuster);
+        Tool.appendArgumentsAdjuster(pytorchAdjuster);
+        stable_abi::ParseDiagConsumer diagConsumer(
+            Factory->getReporter(), &incompleteFiles, &incompleteFilesMutex);
+        if (sources.size() == 1)
+            diagConsumer.setMainFile(sources[0]);
         Tool.setDiagnosticConsumer(&diagConsumer);
         result = Tool.run(Factory.get());
     }
@@ -481,6 +496,45 @@ runWithConfig(stable_abi::Config &cfg,
         return 0;
     }
 
+    // Text-scan complement: catch unstable patterns the AST couldn't analyze
+    // (strings, comments, #ifdef blocks, parse failures)
+    if (writeMode == stable_abi::WriteMode::Audit) {
+        std::set<std::pair<std::string, unsigned>> coveredLines;
+        for (const auto &f : reporter.findings())
+            coveredLines.insert({f.file, f.line});
+
+        const auto &patterns = stable_abi::getUnstablePatterns();
+        for (const auto &src : sources) {
+            llvm::SmallString<256> realPath;
+            if (llvm::sys::fs::real_path(src, realPath))
+                continue;
+            std::string canonical(realPath);
+
+            std::ifstream file(src);
+            std::string line;
+            unsigned lineNo = 0;
+            while (std::getline(file, line)) {
+                ++lineNo;
+                if (coveredLines.count({canonical, lineNo}))
+                    continue;
+                for (const auto &p : patterns) {
+                    auto pos = line.find(p);
+                    if (pos == std::string::npos)
+                        continue;
+                    if (pos > 0 && (std::isalnum(static_cast<unsigned char>(
+                                        line[pos - 1])) ||
+                                    line[pos - 1] == '_'))
+                        continue;
+                    reporter.addFinding(stable_abi::FindingKind::UnstableRef,
+                                        canonical, lineNo, 0, p,
+                                        p + " (not analyzed by AST)",
+                                        stable_abi::FindingAction::Flag);
+                    break;
+                }
+            }
+        }
+    }
+
     reporter.sortFindings();
     reporter.suppressRedundantFlags();
     if (json) {
@@ -488,6 +542,7 @@ runWithConfig(stable_abi::Config &cfg,
     } else {
         reporter.printReport(projectRoot);
         reporter.printSummary();
+        reporter.printFileReport(projectRoot, incompleteFiles);
     }
     reporter.printParseWarnings();
 

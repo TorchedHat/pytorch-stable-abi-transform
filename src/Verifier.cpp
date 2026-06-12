@@ -157,37 +157,30 @@ std::vector<Violation> verifyStableAbi(const std::string &filepath,
         return violations;
     }
 
+    std::string cudaPath;
+    if (!opts.cuda_include.empty()) {
+        llvm::SmallString<256> cp(opts.cuda_include);
+        llvm::sys::path::remove_filename(cp);
+        cudaPath = std::string(cp);
+    }
+
+    // Base args: just the standard, shadow tree, and project includes
     std::vector<std::string> args;
     args.push_back("-std=c++20");
-    args.push_back("-fsyntax-only");
-    args.push_back("-ferror-limit=0");
-
-    if (!opts.resource_dir.empty()) {
-        args.push_back("-resource-dir");
-        args.push_back(opts.resource_dir);
-    }
-
     args.push_back("-I" + shadow.path());
-
-    if (!opts.cuda_include.empty()) {
+    if (!opts.cuda_include.empty())
         args.push_back("-I" + opts.cuda_include);
-        args.push_back("-DUSE_CUDA");
-    }
-
-    for (const auto &inc : opts.extra_includes) {
+    for (const auto &inc : opts.extra_includes)
         args.push_back("-I" + inc);
-    }
-
-    if (llvm::StringRef(filepath).ends_with(".cu") ||
-        llvm::StringRef(filepath).ends_with(".cuh")) {
-        args.push_back("--cuda-host-only");
-    }
 
     auto db =
         std::make_unique<clang::tooling::FixedCompilationDatabase>(".", args);
     std::vector<std::string> sources = {filepath};
 
     clang::tooling::ClangTool tool(*db, sources);
+    // Same adjusters as audit path
+    tool.appendArgumentsAdjuster(
+        makeToolAdjuster(opts.resource_dir, cudaPath, false));
 
     StableAbiDiagConsumer diagConsumer(violations);
     tool.setDiagnosticConsumer(&diagConsumer);

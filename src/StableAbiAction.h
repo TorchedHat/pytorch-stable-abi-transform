@@ -21,6 +21,8 @@ struct ActionOptions {
     IncludeGraph *include_graph = nullptr;
     std::mutex *include_graph_mutex = nullptr;
     std::mutex *write_mutex = nullptr;
+    std::set<std::string> *incomplete_files = nullptr;
+    std::mutex *incomplete_files_mutex = nullptr;
 
     bool generates_edits() const { return write_mode != WriteMode::Audit; }
 };
@@ -77,7 +79,13 @@ class StableAbiActionFactory : public clang::tooling::FrontendActionFactory {
 
 class ParseDiagConsumer : public clang::DiagnosticConsumer {
   public:
-    explicit ParseDiagConsumer(Reporter &reporter) : reporter_(reporter) {}
+    ParseDiagConsumer(Reporter &reporter,
+                      std::set<std::string> *incompleteFiles = nullptr,
+                      std::mutex *incompleteFilesMutex = nullptr)
+        : reporter_(reporter), incomplete_files_(incompleteFiles),
+          incomplete_files_mutex_(incompleteFilesMutex) {}
+
+    void setMainFile(std::string mainFile) { main_file_ = std::move(mainFile); }
 
     void HandleDiagnostic(clang::DiagnosticsEngine::Level level,
                           const clang::Diagnostic &info) override {
@@ -98,10 +106,17 @@ class ParseDiagConsumer : public clang::DiagnosticConsumer {
         info.FormatDiagnostic(msg);
         llvm::errs() << file << ": error: " << msg << "\n";
         reporter_.recordParseError(file);
+        if (incomplete_files_ && !main_file_.empty()) {
+            std::lock_guard<std::mutex> lock(*incomplete_files_mutex_);
+            incomplete_files_->insert(main_file_);
+        }
     }
 
   private:
     Reporter &reporter_;
+    std::string main_file_;
+    std::set<std::string> *incomplete_files_ = nullptr;
+    std::mutex *incomplete_files_mutex_ = nullptr;
 };
 
 } // namespace stable_abi

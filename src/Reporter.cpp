@@ -64,17 +64,44 @@ void Reporter::printReport(std::string_view projectRoot) const {
     bool hasRewrites = rewrite_count_ > 0;
 
     if (hasFlags) {
-        llvm::outs() << "Manual review needed:\n";
+        bool hasAstFlags = false;
+        bool hasTextFlags = false;
         for (const auto &f : findings_) {
             if (f.action != FindingAction::Flag)
                 continue;
-            auto path = shortenPath(f.file, projectRoot);
-            bool skipped =
-                f.new_text.find("skipped region") != std::string::npos;
-            llvm::outs() << "  " << path << ":" << f.line << "  " << f.old_text;
-            if (skipped)
-                llvm::outs() << " (#ifdef)";
-            llvm::outs() << "\n";
+            bool isText =
+                f.new_text.find("not analyzed by AST") != std::string::npos;
+            if (isText)
+                hasTextFlags = true;
+            else
+                hasAstFlags = true;
+        }
+
+        if (hasAstFlags) {
+            llvm::outs() << "Manual review needed:\n";
+            for (const auto &f : findings_) {
+                if (f.action != FindingAction::Flag)
+                    continue;
+                if (f.new_text.find("not analyzed by AST") != std::string::npos)
+                    continue;
+                auto path = shortenPath(f.file, projectRoot);
+                llvm::outs() << "  " << path << ":" << f.line << "  "
+                             << f.old_text << "\n";
+            }
+        }
+
+        if (hasTextFlags) {
+            llvm::outs() << "\nAdditional patterns (not fully analyzed by "
+                            "AST):\n";
+            for (const auto &f : findings_) {
+                if (f.action != FindingAction::Flag)
+                    continue;
+                if (f.new_text.find("not analyzed by AST") == std::string::npos)
+                    continue;
+                auto path = shortenPath(f.file, projectRoot);
+                llvm::outs() << "  " << path << ":" << f.line << "  "
+                             << f.old_text << "\n";
+            }
         }
     }
 
@@ -119,11 +146,49 @@ void Reporter::printSummary() const {
         llvm::outs() << "\nNo unstable API usage found.\n";
         return;
     }
+    size_t astFlags = 0, textFlags = 0;
+    for (const auto &f : findings_) {
+        if (f.action != FindingAction::Flag)
+            continue;
+        if (f.new_text.find("not analyzed by AST") != std::string::npos)
+            ++textFlags;
+        else
+            ++astFlags;
+    }
     llvm::outs() << "\nSummary: " << rewrite_count_ << " auto-rewritable, "
-                 << flag_count_ << " flagged for manual review";
-    if (rewrite_count_ > 0 && flag_count_ == 0)
+                 << astFlags << " flagged";
+    if (textFlags > 0)
+        llvm::outs() << ", " << textFlags << " in incomplete files";
+    if (rewrite_count_ > 0 && astFlags == 0 && textFlags == 0)
         llvm::outs() << " — ready for --mode=rewrite";
     llvm::outs() << "\n";
+}
+
+void Reporter::printFileReport(
+    std::string_view projectRoot,
+    const std::set<std::string> &incompleteFiles) const {
+    std::map<std::string, unsigned> flagsByFile;
+    for (const auto &f : findings_) {
+        if (f.action == FindingAction::Flag)
+            ++flagsByFile[f.file];
+    }
+    if (flagsByFile.empty())
+        return;
+
+    std::vector<std::pair<unsigned, std::string>> sorted;
+    for (const auto &[file, count] : flagsByFile)
+        sorted.push_back({count, file});
+    std::sort(sorted.begin(), sorted.end(),
+              [](const auto &a, const auto &b) { return a.first > b.first; });
+
+    llvm::outs() << "\nFiles needing attention:\n";
+    for (const auto &[count, file] : sorted) {
+        auto path = shortenPath(file, projectRoot);
+        llvm::outs() << "  " << path << "  " << count << " flag(s)";
+        if (incompleteFiles.count(file))
+            llvm::outs() << " (incomplete analysis)";
+        llvm::outs() << "\n";
+    }
 }
 
 void Reporter::printJson() const {
@@ -184,6 +249,9 @@ void Reporter::printParseWarnings() const {
                  << " file(s) — results may be incomplete\n";
     for (const auto &[file, count] : parse_errors_by_file_)
         llvm::errs() << "  " << file << ": " << count << " error(s)\n";
+    llvm::errs()
+        << "  hint: for accurate analysis, generate a compilation database:\n"
+        << "        cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build\n";
 }
 
 void Reporter::sortFindings() {
