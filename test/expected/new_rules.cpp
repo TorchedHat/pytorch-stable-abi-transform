@@ -33,16 +33,6 @@ void use_nbytes(const torch::stable::Tensor& t) {
     auto total_bytes = t.numel() * t.element_size();
 }
 
-// Pattern 5b: .nbytes() with impure receiver — must NOT auto-rewrite.
-// getLogger().tensor.nbytes() has a MemberExpr at the top level, but
-// the base (getLogger()) has side effects.  Duplicating the receiver
-// would call getLogger() twice.
-struct Logger { torch::stable::Tensor tensor; };
-Logger getLogger();
-void use_nbytes_impure() {
-    auto total_bytes = getLogger().tensor.nbytes();
-}
-
 // Pattern 6: AT_DISPATCH_FLOATING_TYPES → THO_DISPATCH_V2
 void dispatch_floating(const torch::stable::Tensor& input) {
     THO_DISPATCH_V2(input.scalar_type(), "floating_kernel", [&] {

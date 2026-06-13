@@ -472,6 +472,34 @@ else
     comp_failed=$((comp_failed + 1))
 fi
 
+# Impure nbytes: getLogger().tensor.nbytes() must be flagged, not auto-rewritten
+NBYTES_INPUT="$WORK_DIR/nbytes_impure.cpp"
+cat > "$NBYTES_INPUT" << 'NBYTESEOF'
+#include <ATen/ATen.h>
+
+struct Logger { at::Tensor tensor; };
+Logger getLogger();
+void f() {
+    auto total = getLogger().tensor.nbytes();
+}
+NBYTESEOF
+
+nbytes_out=$("$TOOL" --mode=audit --format=json "$NBYTES_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
+nbytes_flags=$(echo "$nbytes_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+flags = [f for f in d['findings'] if f['flag'] and 'nbytes' in f.get('old','').lower()]
+print(len(flags))
+")
+if [ "$nbytes_flags" -ge 1 ]; then
+    echo "PASS  nbytes-impure: impure receiver correctly flagged"
+    comp_passed=$((comp_passed + 1))
+else
+    echo "FAIL  nbytes-impure: expected flag for impure nbytes, got $nbytes_flags"
+    echo "$nbytes_out" | python3 -m json.tool 2>/dev/null | head -20
+    comp_failed=$((comp_failed + 1))
+fi
+
 # ifdef auto-reparse: finds unstable API inside #ifdef blocks
 IFDEF_INPUT="$WORK_DIR/ifdef_reparse.cpp"
 cat > "$IFDEF_INPUT" << 'IFDEFEOF'
