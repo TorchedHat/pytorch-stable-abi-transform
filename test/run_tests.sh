@@ -65,8 +65,10 @@ for input_file in "$INPUTS"/*.cpp "$INPUTS"/*.cu; do
 
     # Run the tool in rewrite mode
     # Exit 0 = clean rewrite, exit 1 = flags remain for manual review, exit >1 = crash
+    set +e
     "$TOOL" --mode=rewrite "$WORK_DIR/$basename" "${COMMON_ARGS[@]}" > "$WORK_DIR/$basename.stdout" 2>"$WORK_DIR/$basename.stderr"
     rc=$?
+    set -e
     if [ $rc -gt 1 ]; then
         echo "FAIL  $basename (tool crashed with exit code $rc)"
         cat "$WORK_DIR/$basename.stderr"
@@ -615,8 +617,10 @@ for expected_file in "$EXPECTED"/*.cpp; do
     [ -f "$expected_file" ] || continue
     basename="$(basename "$expected_file")"
 
+    set +e
     timeout 30 "$TOOL" --mode=verify --pytorch-root="$PYTORCH_DIR" "$expected_file" -- -std=c++20 > "$WORK_DIR/verify_out" 2>&1
     rc=$?
+    set -e
     if [ $rc -eq 124 ]; then
         echo "COMPILE TIMEOUT $basename"
         compile_failed=$((compile_failed + 1))
@@ -646,8 +650,10 @@ for expected_file in "$EXPECTED"/*.cpp; do
     basename="$(basename "$expected_file")"
 
     cp "$expected_file" "$WORK_DIR/idemp_$basename"
+    set +e
     "$TOOL" --mode=rewrite "$WORK_DIR/idemp_$basename" "${COMMON_ARGS[@]}" > /dev/null 2>"$WORK_DIR/idemp_$basename.stderr"
     rc=$?
+    set -e
     if [ $rc -gt 1 ]; then
         echo "IDEMP FAIL  $basename (tool crashed with exit code $rc)"
         cat "$WORK_DIR/idemp_$basename.stderr"
