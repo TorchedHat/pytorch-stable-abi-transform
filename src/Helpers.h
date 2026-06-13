@@ -241,6 +241,8 @@ inline const std::vector<std::string> &getUnstablePatterns() {
         }
         for (const auto &r : kNamespaceRules)
             unique.insert(std::string(r.from));
+        for (const auto &p : kDedicatedAstPatterns)
+            unique.insert(std::string(p));
         std::vector<std::string> result(unique.begin(), unique.end());
         std::sort(
             result.begin(), result.end(),

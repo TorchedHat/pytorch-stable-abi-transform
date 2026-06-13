@@ -167,6 +167,58 @@ def extract_methods(ast: dict, class_names: set[str]) -> list[str]:
     return sorted(set(methods))
 
 
+def extract_accelerator_api(ast: dict, shim_ast: dict) -> dict[str, str]:
+    """Extract accelerator API names from accelerator.h and shim.h."""
+    result: dict[str, str] = {}
+
+    # Class names from accelerator.h
+    def visit_class(node, kind, name, namespace):
+        if kind == "CXXRecordDecl" and "torch::stable::accelerator" in namespace:
+            if name == "DeviceGuard":
+                result["guard_class"] = f"{namespace}::{name}"
+            elif name == "Stream":
+                result["stream_class"] = f"{namespace}::{name}"
+
+    # Type aliases from accelerator.h
+    def visit_alias(node, kind, name, namespace):
+        if kind == "TypeAliasDecl" and "torch::stable::accelerator" in namespace:
+            if name == "DeviceIndex":
+                result["device_index_type"] = name
+            elif name == "StreamId":
+                result["stream_id_type"] = name
+
+    walk_ast(ast, [visit_class, visit_alias])
+
+    # C shim function for stream from shim.h
+    def visit_shim(node, kind, name, namespace):
+        if kind == "FunctionDecl" and name == "aoti_torch_get_current_stream":
+            result["stream_func"] = name
+            params = [c for c in node.get("inner", []) if c.get("kind") == "ParmVarDecl"]
+            if len(params) >= 2:
+                out_type = params[-1].get("type", {}).get("qualType", "")
+                if out_type.endswith(" *"):
+                    result["stream_handle_type"] = out_type[: -len(" *")]
+
+    walk_ast(shim_ast, [visit_shim])
+
+    expected = {
+        "guard_class",
+        "stream_class",
+        "device_index_type",
+        "stream_id_type",
+        "stream_func",
+        "stream_handle_type",
+    }
+    missing = expected - result.keys()
+    if missing:
+        print(
+            f"warning: missing accelerator API names: {missing}",
+            file=sys.stderr,
+        )
+
+    return result
+
+
 def extract_enum_constants(ast: dict, enum_name: str) -> list[str]:
     """Extract constant names from a named enum."""
     constants: list[str] = []
@@ -286,6 +338,7 @@ def generate_rules_h(
     device_types: list[EnumConstant],
     macros: list[StableMacro],
     stable_methods: list[str],
+    accel_api: dict[str, str],
     pytorch_dir: Path,
 ) -> str:
     """Generate the complete Rules.h file."""
@@ -533,17 +586,42 @@ def generate_rules_h(
     lines.append("")
 
     # --- Method rename rules ---
+    method_rename_rules = [("dtype", "scalar_type"), ("itemsize", "element_size")]
+
     lines.append("struct MethodRenameRule {")
     lines.append("    std::string_view from;")
     lines.append("    std::string_view to;")
     lines.append("};")
     lines.append("")
     lines.append("inline constexpr std::array kMethodRenameRules = {")
-    lines.append('    MethodRenameRule{"dtype", "scalar_type"},')
-    lines.append('    MethodRenameRule{"itemsize", "element_size"},')
-    lines.append('    MethodRenameRule{"data_ptr", "mutable_data_ptr"},')
+    for old, new in method_rename_rules:
+        lines.append(f'    MethodRenameRule{{"{old}", "{new}"}},')
     lines.append("};")
     lines.append("")
+
+    # Dedicated AST patterns: methods with custom handlers (not in rename/func tables).
+    # The text-scan complement needs these to detect patterns in #ifdef blocks.
+    dedicated_method_patterns = ["data_ptr"]
+    lines.append("// Methods with dedicated AST handlers (not in rename/func tables).")
+    lines.append("// Listed here so the text-scan complement can detect them in #ifdef blocks.")
+    lines.append("inline constexpr std::array kDedicatedAstPatterns = {")
+    for m in dedicated_method_patterns:
+        lines.append(f'    std::string_view{{".{m}<"}},')
+        lines.append(f'    std::string_view{{".{m}("}},')
+    lines.append("};")
+    lines.append("")
+
+    # Disjointness check: dedicated patterns must not overlap with rename/func tables.
+    rename_names = {r[0] for r in method_rename_rules}
+    func_names = {op.name for op in method_ops}
+    overlap = set(dedicated_method_patterns) & (rename_names | func_names)
+    if overlap:
+        print(
+            f"ERROR: disjoint rule violation — {overlap} in both dedicated "
+            f"handlers and rename/func tables",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # --- Comparison macro rules ---
     lines.append("struct ComparisonMacroRule {")
@@ -648,6 +726,15 @@ def generate_rules_h(
     lines.append("};")
     lines.append("")
 
+    # --- Accelerator API constants (derived from accelerator.h + shim.h) ---
+    lines.append("// Stable accelerator API names. Auto-generated from accelerator.h and shim.h.")
+    lines.append("// Used by DeviceGuard and CudaStream callbacks.")
+    for key, value in sorted(accel_api.items()):
+        camel = "".join(w.capitalize() for w in key.split("_"))
+        const_name = "kAccelerator" + camel
+        lines.append(f'inline constexpr std::string_view {const_name} = "{value}";')
+    lines.append("")
+
     lines.append("} // namespace stable_abi")
     lines.append("")
 
@@ -708,6 +795,13 @@ def main():
     device_types = derive_device_types(device_values)
     print(f"  Found {len(device_types)} device types (AST)", file=sys.stderr)
 
+    # Accelerator API (DeviceGuard, Stream, etc.)
+    accel_ast = parse_ast(stable_dir / "accelerator.h", include_dir)
+    shim_dir = pytorch_dir / "torch" / "csrc" / "inductor" / "aoti_torch" / "c"
+    shim_ast = parse_ast(shim_dir / "shim.h", include_dir)
+    accel_api = extract_accelerator_api(accel_ast, shim_ast)
+    print(f"  Found {len(accel_api)} accelerator API names (AST)", file=sys.stderr)
+
     # Macros (text search — only thing that can't use AST)
     macros = extract_macros(stable_dir)
     print(f"  Found {len(macros)} stable macros (text)", file=sys.stderr)
@@ -731,6 +825,7 @@ def main():
         device_types,
         macros,
         stable_methods,
+        accel_api,
         pytorch_dir,
     )
 

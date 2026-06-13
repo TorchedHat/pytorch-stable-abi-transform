@@ -335,6 +335,13 @@ inline constexpr std::array kMethodRenameRules = {
     MethodRenameRule{"itemsize", "element_size"},
 };
 
+// Methods with dedicated AST handlers (not in rename/func tables).
+// Listed here so the text-scan complement can detect them in #ifdef blocks.
+inline constexpr std::array kDedicatedAstPatterns = {
+    std::string_view{".data_ptr<"},
+    std::string_view{".data_ptr("},
+};
+
 struct ComparisonMacroRule {
     std::string_view name;
     std::string_view op;
@@ -477,9 +484,16 @@ inline constexpr std::array kNamespaceRules = {
     NamespaceRule{"c10::cuda::", "torch::stable::accelerator::"},
 };
 
-// Patterns handled by AST matchers not in rule tables.
-inline constexpr std::array kAstMatcherPatterns = {
-    std::string_view(".data_ptr<"),
-};
+// Stable accelerator API names. Auto-generated from accelerator.h and shim.h.
+// Used by DeviceGuard and CudaStream callbacks.
+inline constexpr std::string_view kAcceleratorDeviceIndexType = "DeviceIndex";
+inline constexpr std::string_view kAcceleratorGuardClass =
+    "torch::stable::accelerator::DeviceGuard";
+inline constexpr std::string_view kAcceleratorStreamClass =
+    "torch::stable::accelerator::Stream";
+inline constexpr std::string_view kAcceleratorStreamFunc =
+    "aoti_torch_get_current_stream";
+inline constexpr std::string_view kAcceleratorStreamHandleType = "StreamHandle";
+inline constexpr std::string_view kAcceleratorStreamIdType = "StreamId";
 
 } // namespace stable_abi
