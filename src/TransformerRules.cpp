@@ -100,6 +100,20 @@ static llvm::Expected<SmallVector<Edit, 1>> noEdits() {
     return SmallVector<Edit, 1>{};
 }
 
+/// Check whether an expression is side-effect-free for the purpose of
+/// receiver duplication (e.g., nbytes expansion).  Accepts DeclRefExpr
+/// (variable references) and MemberExpr whose base is itself
+/// side-effect-free.  Rejects function calls, operator overloads, and
+/// any other expression that may produce observable effects.
+static bool isSideEffectFree(const Expr *E) {
+    E = E->IgnoreParenImpCasts();
+    if (isa<DeclRefExpr>(E))
+        return true;
+    if (const auto *ME = dyn_cast<MemberExpr>(E))
+        return isSideEffectFree(ME->getBase());
+    return false;
+}
+
 static ast_matchers::internal::Matcher<NamedDecl>
 hasAnyNameFromVec(std::vector<std::string> names) {
     return ast_matchers::internal::Matcher<NamedDecl>(
@@ -163,8 +177,10 @@ singleEdit(SourceRange range, std::string replacement) {
 // ---------------------------------------------------------------------------
 
 static bool isEnumQualifierType(std::string_view typeName) {
-    return typeName == "at::ScalarType" || typeName == "c10::ScalarType" ||
-           typeName == "at::DeviceType" || typeName == "c10::DeviceType";
+    for (const auto &eq : kEnumQualifierTypes)
+        if (typeName == eq)
+            return true;
+    return false;
 }
 
 // Returns the bracket depth at `pos` in `text`, counting < and >.
@@ -264,23 +280,20 @@ static void addTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
         return noEdits();
     };
 
-    rules.push_back(makeRule(
-        typeLoc(
-            loc.typeLoc,
-            ast_matchers::loc(qualType(hasDeclaration(namedDecl(hasAnyName(
-                "at::Tensor", "torch::Tensor", "c10::Device", "at::Device",
-                "torch::Device", "at::ScalarType", "c10::ScalarType",
-                "torch::Dtype", "at::DeviceType", "c10::DeviceType",
-                "at::Layout", "c10::Layout", "at::MemoryFormat",
-                "c10::MemoryFormat", "at::Half", "c10::Half", "at::BFloat16",
-                "c10::BFloat16", "c10::Float8_e4m3fn", "c10::Float8_e4m3fnuz",
-                "c10::Float8_e5m2", "c10::Float8_e5m2fnuz",
-                "c10::CppTypeToScalarType", "c10::optional", "std::optional",
-                "c10::ArrayRef", "c10::IntArrayRef", "at::IntArrayRef",
-                "c10::string_view", "std::string_view", "torch::TensorOptions",
-                "at::TensorOptions", "c10::TensorOptions"))))))
-            .bind("tl"),
-        EditGenerator(editGen)));
+    std::vector<std::string> typeNames;
+    for (const auto &r : kTypeRules) {
+        if (!r.from.empty())
+            typeNames.push_back(std::string(r.from));
+        if (!r.to.empty())
+            typeNames.push_back(std::string(r.to));
+    }
+
+    rules.push_back(
+        makeRule(typeLoc(loc.typeLoc,
+                         ast_matchers::loc(qualType(hasDeclaration(namedDecl(
+                             hasAnyNameFromVec(std::move(typeNames)))))))
+                     .bind("tl"),
+                 EditGenerator(editGen)));
 }
 
 // ---------------------------------------------------------------------------
@@ -378,19 +391,26 @@ static void addEnumShorthandRules(
     rules.push_back(makeRule(enumMatcher, EditGenerator(editGen)));
 }
 
+template <MappingRuleRange ShorthandTable>
+static std::vector<std::string>
+shorthandNames(const ShorthandTable &shorthands) {
+    std::set<std::string> names;
+    for (const auto &r : shorthands) {
+        auto sv = std::string_view(r.from);
+        auto pos = sv.rfind("::");
+        if (pos != std::string_view::npos)
+            names.insert(std::string(sv.substr(pos + 2)));
+    }
+    return {names.begin(), names.end()};
+}
+
 static void addScalarTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                                bool rewrite, const LocFilter &loc) {
+    auto names = shorthandNames(kScalarTypeShorthands);
     addEnumShorthandRules(
         rules, rep, rewrite, loc,
-        declRefExpr(
-            loc.stmt,
-            to(namedDecl(hasAnyName(
-                "kFloat", "kFloat16", "kFloat32", "kFloat64", "kDouble",
-                "kHalf", "kBFloat16", "kBool", "kByte", "kChar", "kShort",
-                "kInt", "kInt8", "kInt16", "kInt32", "kInt64", "kLong",
-                "kFloat8_e4m3fn", "kFloat8_e5m2", "kFloat8_e4m3fnuz",
-                "kFloat8_e5m2fnuz", "kFloat8_e8m0fnu", "kFloat4_e2m1fn_x2",
-                "kComplexHalf", "kComplexFloat", "kComplexDouble", "kUInt8"))))
+        declRefExpr(loc.stmt,
+                    to(namedDecl(hasAnyNameFromVec(std::move(names)))))
             .bind("scalarRef"),
         declRefExpr(loc.stmt, to(enumConstantDecl(hasDeclContext(
                                   enumDecl(hasName("ScalarType"))))))
@@ -401,14 +421,11 @@ static void addScalarTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
 
 static void addDeviceTypeRules(std::vector<RewriteRule> &rules, Reporter &rep,
                                bool rewrite, const LocFilter &loc) {
+    auto names = shorthandNames(kDeviceTypeShorthands);
     addEnumShorthandRules(
         rules, rep, rewrite, loc,
         declRefExpr(loc.stmt,
-                    to(namedDecl(hasAnyName(
-                        "kCPU", "kCUDA", "kMKLDNN", "kOPENGL", "kOPENCL",
-                        "kIDEEP", "kHIP", "kFPGA", "kMAIA", "kXLA", "kVulkan",
-                        "kMetal", "kXPU", "kMPS", "kMeta", "kHPU", "kVE",
-                        "kLazy", "kIPU", "kMTIA", "kPrivateUse1"))))
+                    to(namedDecl(hasAnyNameFromVec(std::move(names)))))
             .bind("deviceRef"),
         declRefExpr(loc.stmt, to(enumConstantDecl(hasDeclContext(
                                   enumDecl(hasName("DeviceType"))))))
@@ -794,8 +811,8 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
 
     rules.push_back(makeRule(
         callExpr(loc.stmt,
-                 callee(functionDecl(
-                     hasAnyName("at::elementSize", "c10::elementSize"))),
+                 callee(functionDecl(hasAnyName(std::string(kElementSizeAt),
+                                                std::string(kElementSizeC10)))),
                  hasArgument(0, ignoringImplicit(cxxMemberCallExpr(
                                     callee(cxxMethodDecl(
                                         hasAnyName("scalar_type", "dtype"))),
@@ -803,7 +820,6 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
             .bind("elemSizeExact"),
         EditGenerator(exactGen)));
 
-    // at::elementSize(...) — flag only (can't auto-rewrite)
     auto fallbackGen = [&rep, projectRoot](const MatchFinder::MatchResult &R)
         -> llvm::Expected<SmallVector<Edit, 1>> {
         const auto *CE = R.Nodes.getNodeAs<CallExpr>("elemSizeFallback");
@@ -827,8 +843,9 @@ static void addElementSizeRules(std::vector<RewriteRule> &rules, Reporter &rep,
     };
 
     rules.push_back(makeRule(
-        callExpr(loc.stmt, callee(functionDecl(hasAnyName("at::elementSize",
-                                                          "c10::elementSize"))))
+        callExpr(loc.stmt,
+                 callee(functionDecl(hasAnyName(std::string(kElementSizeAt),
+                                                std::string(kElementSizeC10)))))
             .bind("elemSizeFallback"),
         EditGenerator(fallbackGen)));
 }
@@ -934,11 +951,7 @@ static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
                             replacement))
             return noEdits();
 
-        const bool sideEffectFree =
-            isa<DeclRefExpr>(obj->IgnoreParenImpCasts()) ||
-            isa<MemberExpr>(obj->IgnoreParenImpCasts());
-
-        if (!sideEffectFree) {
+        if (!isSideEffectFree(obj)) {
             rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
                            fullText, replacement, FindingAction::Flag);
             return noEdits();
@@ -979,7 +992,7 @@ static void addNulloptRule(std::vector<RewriteRule> &rules, Reporter &rep,
 
         auto text =
             getSourceText(DRE->getSourceRange(), SM, R.Context->getLangOpts());
-        if (text != "c10::nullopt" && text != "::c10::nullopt")
+        if (text.find(kNulloptC10) == std::string::npos)
             return noEdits();
 
         if (flagIfMacroBody(cl, SM, rep, FindingKind::Type, text,

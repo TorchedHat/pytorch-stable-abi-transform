@@ -501,6 +501,16 @@ def generate_rules_h(
     lines.append("};")
     lines.append("")
 
+    # Types that can prefix enum constants (at::ScalarType::Float, c10::DeviceType::CPU).
+    # Used to suppress type-rule matches when followed by '::'.
+    enum_targets = {"torch::headeronly::ScalarType", "torch::headeronly::DeviceType"}
+    enum_qualifiers = [old for old, new in type_rules if new in enum_targets]
+    lines.append("inline constexpr std::array kEnumQualifierTypes = {")
+    for eq in enum_qualifiers:
+        lines.append(f'    std::string_view{{"{eq}"}},')
+    lines.append("};")
+    lines.append("")
+
     # --- Macro rules ---
     lines.append("struct MacroRule {")
     lines.append("    std::string_view from;")
@@ -599,19 +609,38 @@ def generate_rules_h(
     lines.append("};")
     lines.append("")
 
-    # Dedicated AST patterns: methods with custom handlers (not in rename/func tables).
+    # Patterns with dedicated AST handlers not in any rule table.
     # The text-scan complement needs these to detect patterns in #ifdef blocks.
+    # Named constants let the C++ matchers reference them too.
     dedicated_method_patterns = ["data_ptr"]
-    lines.append("// Methods with dedicated AST handlers (not in rename/func tables).")
+    dedicated_functions = [
+        ("at::elementSize", "kElementSizeAt"),
+        ("c10::elementSize", "kElementSizeC10"),
+    ]
+    dedicated_values = [
+        ("c10::nullopt", "kNulloptC10"),
+    ]
+    dedicated_macros = ["AT_ERROR"]
+
+    lines.append("// Named constants for dedicated AST handlers.")
+    for pattern, const in dedicated_functions + dedicated_values:
+        lines.append(f'inline constexpr std::string_view {const} = "{pattern}";')
+    lines.append("")
+
+    lines.append("// Patterns with dedicated AST handlers (not in rename/func/macro tables).")
     lines.append("// Listed here so the text-scan complement can detect them in #ifdef blocks.")
     lines.append("inline constexpr std::array kDedicatedAstPatterns = {")
     for m in dedicated_method_patterns:
         lines.append(f'    std::string_view{{".{m}<"}},')
         lines.append(f'    std::string_view{{".{m}("}},')
+    for pattern, const in dedicated_functions + dedicated_values:
+        lines.append(f"    {const},")
+    for m in dedicated_macros:
+        lines.append(f'    std::string_view{{"{m}"}},')
     lines.append("};")
     lines.append("")
 
-    # Disjointness check: dedicated patterns must not overlap with rename/func tables.
+    # Disjointness check: dedicated method patterns must not overlap with rename/func tables.
     rename_names = {r[0] for r in method_rename_rules}
     func_names = {op.name for op in method_ops}
     overlap = set(dedicated_method_patterns) & (rename_names | func_names)

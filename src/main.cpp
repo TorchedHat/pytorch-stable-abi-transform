@@ -8,7 +8,6 @@
 #include <clang/Tooling/CommonOptionsParser.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
-#include <fstream>
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
@@ -496,44 +495,8 @@ runWithConfig(stable_abi::Config &cfg,
         return 0;
     }
 
-    // Text-scan complement: catch unstable patterns the AST couldn't analyze
-    // (strings, comments, #ifdef blocks, parse failures)
-    if (writeMode == stable_abi::WriteMode::Audit) {
-        std::set<std::pair<std::string, unsigned>> coveredLines;
-        for (const auto &f : reporter.findings())
-            coveredLines.insert({f.file, f.line});
-
-        const auto &patterns = stable_abi::getUnstablePatterns();
-        for (const auto &src : sources) {
-            llvm::SmallString<256> realPath;
-            if (llvm::sys::fs::real_path(src, realPath))
-                continue;
-            std::string canonical(realPath);
-
-            std::ifstream file(src);
-            std::string line;
-            unsigned lineNo = 0;
-            while (std::getline(file, line)) {
-                ++lineNo;
-                if (coveredLines.count({canonical, lineNo}))
-                    continue;
-                for (const auto &p : patterns) {
-                    auto pos = line.find(p);
-                    if (pos == std::string::npos)
-                        continue;
-                    if (pos > 0 && (std::isalnum(static_cast<unsigned char>(
-                                        line[pos - 1])) ||
-                                    line[pos - 1] == '_'))
-                        continue;
-                    reporter.addFinding(stable_abi::FindingKind::UnstableRef,
-                                        canonical, lineNo, 0, p,
-                                        p + " (not analyzed by AST)",
-                                        stable_abi::FindingAction::Flag);
-                    break;
-                }
-            }
-        }
-    }
+    if (writeMode == stable_abi::WriteMode::Audit)
+        reporter.runTextScanComplement(sources);
 
     reporter.sortFindings();
     reporter.suppressRedundantFlags();
