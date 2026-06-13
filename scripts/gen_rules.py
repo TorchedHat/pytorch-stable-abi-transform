@@ -194,12 +194,28 @@ def extract_accelerator_api(ast: dict, shim_ast: dict) -> dict[str, str]:
         if kind == "FunctionDecl" and name == "aoti_torch_get_current_stream":
             result["stream_func"] = name
             params = [c for c in node.get("inner", []) if c.get("kind") == "ParmVarDecl"]
-            for p in params:
-                ptype = p.get("type", {}).get("qualType", "")
-                if "Stream" in ptype:
-                    result["stream_handle_type"] = ptype.replace(" *", "").strip()
+            if len(params) >= 2:
+                out_type = params[-1].get("type", {}).get("qualType", "")
+                if out_type.endswith(" *"):
+                    result["stream_handle_type"] = out_type[: -len(" *")]
 
     walk_ast(shim_ast, [visit_shim])
+
+    expected = {
+        "guard_class",
+        "stream_class",
+        "device_index_type",
+        "stream_id_type",
+        "stream_func",
+        "stream_handle_type",
+    }
+    missing = expected - result.keys()
+    if missing:
+        print(
+            f"warning: missing accelerator API names: {missing}",
+            file=sys.stderr,
+        )
+
     return result
 
 
@@ -570,17 +586,42 @@ def generate_rules_h(
     lines.append("")
 
     # --- Method rename rules ---
+    method_rename_rules = [("dtype", "scalar_type"), ("itemsize", "element_size")]
+
     lines.append("struct MethodRenameRule {")
     lines.append("    std::string_view from;")
     lines.append("    std::string_view to;")
     lines.append("};")
     lines.append("")
     lines.append("inline constexpr std::array kMethodRenameRules = {")
-    lines.append('    MethodRenameRule{"dtype", "scalar_type"},')
-    lines.append('    MethodRenameRule{"itemsize", "element_size"},')
-    lines.append('    MethodRenameRule{"data_ptr", "mutable_data_ptr"},')
+    for old, new in method_rename_rules:
+        lines.append(f'    MethodRenameRule{{"{old}", "{new}"}},')
     lines.append("};")
     lines.append("")
+
+    # Dedicated AST patterns: methods with custom handlers (not in rename/func tables).
+    # The text-scan complement needs these to detect patterns in #ifdef blocks.
+    dedicated_method_patterns = ["data_ptr"]
+    lines.append("// Methods with dedicated AST handlers (not in rename/func tables).")
+    lines.append("// Listed here so the text-scan complement can detect them in #ifdef blocks.")
+    lines.append("inline constexpr std::array kDedicatedAstPatterns = {")
+    for m in dedicated_method_patterns:
+        lines.append(f'    std::string_view{{".{m}<"}},')
+        lines.append(f'    std::string_view{{".{m}("}},')
+    lines.append("};")
+    lines.append("")
+
+    # Disjointness check: dedicated patterns must not overlap with rename/func tables.
+    rename_names = {r[0] for r in method_rename_rules}
+    func_names = {op.name for op in method_ops}
+    overlap = set(dedicated_method_patterns) & (rename_names | func_names)
+    if overlap:
+        print(
+            f"ERROR: disjoint rule violation — {overlap} in both dedicated "
+            f"handlers and rename/func tables",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # --- Comparison macro rules ---
     lines.append("struct ComparisonMacroRule {")
@@ -689,7 +730,8 @@ def generate_rules_h(
     lines.append("// Stable accelerator API names. Auto-generated from accelerator.h and shim.h.")
     lines.append("// Used by DeviceGuard and CudaStream callbacks.")
     for key, value in sorted(accel_api.items()):
-        const_name = "kAccelerator_" + key
+        camel = "".join(w.capitalize() for w in key.split("_"))
+        const_name = "kAccelerator" + camel
         lines.append(f'inline constexpr std::string_view {const_name} = "{value}";')
     lines.append("")
 

@@ -1298,7 +1298,7 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
 
     if (deviceExpr.empty()) {
         reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text,
-                             std::string(kAccelerator_guard_class) + " " +
+                             std::string(kAcceleratorGuardClass) + " " +
                                  varName + "(tensor.get_device_index())",
                              FindingAction::Flag);
         return;
@@ -1306,7 +1306,7 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
 
     last_device_expr_ = deviceExpr;
 
-    std::string replacement = "const " + std::string(kAccelerator_guard_class) +
+    std::string replacement = "const " + std::string(kAcceleratorGuardClass) +
                               " " + varName + "(" + deviceExpr + ");";
 
     reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text, replacement);
@@ -1372,12 +1372,12 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
             std::string deviceExpr = device_expr.empty() ? "-1" : device_expr;
 
             std::string replacement =
-                std::string(kAccelerator_stream_handle_type) + " " + varName +
+                std::string(kAcceleratorStreamHandleType) + " " + varName +
                 "_handle = nullptr;\n" + indent +
-                std::string(kAccelerator_stream_func) + "(" + deviceExpr +
-                ", &" + varName + "_handle);\n" + indent +
-                "const cudaStream_t " + varName +
-                " = reinterpret_cast<cudaStream_t>(" + varName + "_handle);";
+                std::string(kAcceleratorStreamFunc) + "(" + deviceExpr + ", &" +
+                varName + "_handle);\n" + indent + "const cudaStream_t " +
+                varName + " = reinterpret_cast<cudaStream_t>(" + varName +
+                "_handle);";
 
             reporter_.addFinding(FindingKind::CudaStream, SM, loc, stmtText,
                                  replacement);
@@ -1401,7 +1401,7 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
     }
 
     reporter_.addFinding(FindingKind::CudaStream, SM, loc, text,
-                         std::string(kAccelerator_stream_func) +
+                         std::string(kAcceleratorStreamFunc) +
                              "(device_index, &stream_handle)",
                          FindingAction::Flag);
 }
