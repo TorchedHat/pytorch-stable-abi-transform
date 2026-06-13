@@ -1,5 +1,7 @@
 #include "Reporter.h"
 #include "Helpers.h"
+#include <fstream>
+#include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Format.h>
 #include <llvm/Support/raw_ostream.h>
 
@@ -252,6 +254,41 @@ void Reporter::printParseWarnings() const {
     llvm::errs()
         << "  hint: for accurate analysis, generate a compilation database:\n"
         << "        cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build\n";
+}
+
+void Reporter::runTextScanComplement(const std::vector<std::string> &sources) {
+    std::set<std::pair<std::string, unsigned>> coveredLines;
+    for (const auto &f : findings_)
+        coveredLines.insert({f.file, f.line});
+
+    const auto &patterns = getUnstablePatterns();
+    for (const auto &src : sources) {
+        llvm::SmallString<256> realPath;
+        if (llvm::sys::fs::real_path(src, realPath))
+            continue;
+        std::string canonical(realPath);
+
+        std::ifstream file(src);
+        std::string line;
+        unsigned lineNo = 0;
+        while (std::getline(file, line)) {
+            ++lineNo;
+            if (coveredLines.count({canonical, lineNo}))
+                continue;
+            for (const auto &p : patterns) {
+                auto pos = line.find(p);
+                if (pos == std::string::npos)
+                    continue;
+                if (pos > 0 &&
+                    (std::isalnum(static_cast<unsigned char>(line[pos - 1])) ||
+                     line[pos - 1] == '_'))
+                    continue;
+                addFinding(FindingKind::UnstableRef, canonical, lineNo, 0, p,
+                           p + " (not analyzed by AST)", FindingAction::Flag);
+                break;
+            }
+        }
+    }
 }
 
 void Reporter::sortFindings() {

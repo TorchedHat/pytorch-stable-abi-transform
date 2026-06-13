@@ -124,6 +124,12 @@ inline constexpr std::array kTypeRules = {
     TypeRule{"c10::TensorOptions", ""},
 };
 
+inline constexpr std::array kEnumQualifierTypes = {
+    std::string_view{"at::ScalarType"},  std::string_view{"c10::ScalarType"},
+    std::string_view{"torch::Dtype"},    std::string_view{"at::DeviceType"},
+    std::string_view{"c10::DeviceType"},
+};
+
 struct MacroRule {
     std::string_view from;
     std::string_view to;
@@ -335,11 +341,20 @@ inline constexpr std::array kMethodRenameRules = {
     MethodRenameRule{"itemsize", "element_size"},
 };
 
-// Methods with dedicated AST handlers (not in rename/func tables).
+// Named constants for dedicated AST handlers.
+inline constexpr std::string_view kElementSizeAt = "at::elementSize";
+inline constexpr std::string_view kElementSizeC10 = "c10::elementSize";
+inline constexpr std::string_view kNulloptC10 = "c10::nullopt";
+
+// Patterns with dedicated AST handlers (not in rename/func/macro tables).
 // Listed here so the text-scan complement can detect them in #ifdef blocks.
 inline constexpr std::array kDedicatedAstPatterns = {
     std::string_view{".data_ptr<"},
     std::string_view{".data_ptr("},
+    kElementSizeAt,
+    kElementSizeC10,
+    kNulloptC10,
+    std::string_view{"AT_ERROR"},
 };
 
 struct ComparisonMacroRule {

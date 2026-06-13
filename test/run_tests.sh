@@ -64,8 +64,11 @@ for input_file in "$INPUTS"/*.cpp "$INPUTS"/*.cu; do
     cp "$input_file" "$WORK_DIR/$basename"
 
     # Run the tool in rewrite mode
-    if ! "$TOOL" --mode=rewrite "$WORK_DIR/$basename" "${COMMON_ARGS[@]}" > "$WORK_DIR/$basename.stdout" 2>"$WORK_DIR/$basename.stderr"; then
-        echo "FAIL  $basename (tool returned non-zero)"
+    # Exit 0 = clean rewrite, exit 1 = flags remain for manual review, exit >1 = crash
+    "$TOOL" --mode=rewrite "$WORK_DIR/$basename" "${COMMON_ARGS[@]}" > "$WORK_DIR/$basename.stdout" 2>"$WORK_DIR/$basename.stderr"
+    rc=$?
+    if [ $rc -gt 1 ]; then
+        echo "FAIL  $basename (tool crashed with exit code $rc)"
         cat "$WORK_DIR/$basename.stderr"
         failed=$((failed + 1))
         continue
@@ -612,17 +615,14 @@ for expected_file in "$EXPECTED"/*.cpp; do
     [ -f "$expected_file" ] || continue
     basename="$(basename "$expected_file")"
 
-    if timeout 30 "$TOOL" --mode=verify --pytorch-root="$PYTORCH_DIR" "$expected_file" -- -std=c++20 > "$WORK_DIR/verify_out" 2>&1; then
-        rc=0
-    else
-        rc=$?
-    fi
+    timeout 30 "$TOOL" --mode=verify --pytorch-root="$PYTORCH_DIR" "$expected_file" -- -std=c++20 > "$WORK_DIR/verify_out" 2>&1
+    rc=$?
     if [ $rc -eq 124 ]; then
         echo "COMPILE TIMEOUT $basename"
         compile_failed=$((compile_failed + 1))
         continue
     fi
-    if grep -q "PASS" "$WORK_DIR/verify_out"; then
+    if [ $rc -eq 0 ] && grep -q "PASS" "$WORK_DIR/verify_out"; then
         echo "COMPILE PASS  $basename"
         compile_passed=$((compile_passed + 1))
     else
@@ -635,4 +635,37 @@ done
 echo ""
 echo "Compile verification: $compile_passed passed, $compile_failed failed"
 [ "$compile_failed" -gt 0 ] && exit 1
+
+# Idempotence: rewriting already-rewritten output must produce zero changes
+echo ""
+echo "--- Idempotence tests ---"
+idemp_passed=0
+idemp_failed=0
+for expected_file in "$EXPECTED"/*.cpp; do
+    [ -f "$expected_file" ] || continue
+    basename="$(basename "$expected_file")"
+
+    cp "$expected_file" "$WORK_DIR/idemp_$basename"
+    "$TOOL" --mode=rewrite "$WORK_DIR/idemp_$basename" "${COMMON_ARGS[@]}" > /dev/null 2>"$WORK_DIR/idemp_$basename.stderr"
+    rc=$?
+    if [ $rc -gt 1 ]; then
+        echo "IDEMP FAIL  $basename (tool crashed with exit code $rc)"
+        cat "$WORK_DIR/idemp_$basename.stderr"
+        idemp_failed=$((idemp_failed + 1))
+        continue
+    fi
+
+    if diff -q "$expected_file" "$WORK_DIR/idemp_$basename" > /dev/null 2>&1; then
+        echo "IDEMP PASS  $basename"
+        idemp_passed=$((idemp_passed + 1))
+    else
+        echo "IDEMP FAIL  $basename (rewrite changed already-stable output)"
+        diff -u "$expected_file" "$WORK_DIR/idemp_$basename" | head -20
+        idemp_failed=$((idemp_failed + 1))
+    fi
+done
+
+echo ""
+echo "Idempotence: $idemp_passed passed, $idemp_failed failed"
+[ "$idemp_failed" -gt 0 ] && exit 1
 exit 0

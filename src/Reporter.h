@@ -71,6 +71,8 @@ class Reporter {
         return findings_;
     }
 
+    void runTextScanComplement(const std::vector<std::string> &sources);
+
     void recordParseError(const std::string &file);
     [[nodiscard]] size_t parseErrorCount() const { return parse_error_count_; }
     void printParseWarnings() const;
