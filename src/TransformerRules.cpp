@@ -141,12 +141,28 @@ static ClassifiedLoc classifyLoc(SourceLocation loc, const SourceManager &SM,
     return {LocClass::Rewritable, spelling};
 }
 
+static bool isRewritableAtDefinition(std::string_view pattern) {
+    for (const auto &r : kTypeRules)
+        if (r.from == pattern && !r.to.empty())
+            return true;
+    for (const auto &r : kMacroRules)
+        if (r.from == pattern && !r.flag_only)
+            return true;
+    for (const auto &r : kNamespaceRules)
+        if (r.from == pattern)
+            return true;
+    return false;
+}
+
 static bool flagIfMacroBody(ClassifiedLoc cl, const SourceManager &SM,
                             Reporter &rep, FindingKind kind,
                             std::string_view old_text,
                             std::string_view new_text) {
     if (cl.kind != LocClass::MacroBody)
         return false;
+    if (isRewritableAtDefinition(old_text) || kind == FindingKind::ScalarType ||
+        kind == FindingKind::DataPtr)
+        return true;
     std::string flagText = std::string(new_text) + " (inside macro body)";
     rep.addFinding(kind, SM, cl.spelling, old_text, flagText,
                    FindingAction::Flag);
@@ -324,11 +340,8 @@ rewriteEnumRef(const MatchFinder::MatchResult &R, Reporter &rep, bool rewrite,
         return noEdits();
     if (!dedup.insert(SM.getFileOffset(spellingLoc)).second)
         return noEdits();
-    if (SM.isMacroBodyExpansion(loc)) {
-        rep.addFinding(FindingKind::ScalarType, SM, spellingLoc, macroBodyDesc,
-                       "(inside macro body)", FindingAction::Flag);
+    if (SM.isMacroBodyExpansion(loc))
         return noEdits();
-    }
 
     const bool in_macro_arg = SM.isMacroArgExpansion(loc);
     SourceRange textRange =
@@ -472,28 +485,34 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
                 const auto argType = tArgs[0].getArgument().getAsType();
                 if (argType->isDependentType()) {
                     rep.addFinding(FindingKind::DataPtr, SM, cl.spelling,
-                                   "data_ptr<dependent>",
-                                   "mutable_data_ptr<T> (dependent type)",
-                                   FindingAction::Flag);
-                    return noEdits();
+                                   "data_ptr", "mutable_data_ptr");
+                    if (!rewrite)
+                        return noEdits();
+                    auto range = member("dataPtrMember")(R);
+                    if (!range)
+                        return noEdits();
+                    Edit E;
+                    E.Kind = EditKind::Range;
+                    E.Range = *range;
+                    E.Replacement = "mutable_data_ptr";
+                    return SmallVector<Edit, 1>{std::move(E)};
                 }
             }
         }
-
-        auto loc = CE->getBeginLoc();
-        const bool in_macro = SM.isMacroArgExpansion(loc);
-        auto memberLoc = in_macro ? SM.getSpellingLoc(ME->getMemberLoc())
-                                  : ME->getMemberLoc();
 
         rep.addFinding(FindingKind::DataPtr, SM, cl.spelling, "data_ptr",
                        replacement);
         if (!rewrite)
             return noEdits();
 
-        return singleEdit(
-            memberLoc,
-            static_cast<unsigned>(std::string_view("data_ptr").size()),
-            replacement);
+        auto range = member("dataPtrMember")(R);
+        if (!range)
+            return noEdits();
+        Edit E;
+        E.Kind = EditKind::Range;
+        E.Range = *range;
+        E.Replacement = replacement;
+        return SmallVector<Edit, 1>{std::move(E)};
     };
 
     rules.push_back(makeRule(
@@ -723,12 +742,8 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules, Reporter &rep,
         auto spellingLoc = SM.getSpellingLoc(exprLoc);
         if (!isInProjectScope(SM, spellingLoc, projectRoot))
             return noEdits();
-        if (SM.isMacroBodyExpansion(exprLoc)) {
-            rep.addFinding(FindingKind::MethodToFunc, SM, spellingLoc, "dtype",
-                           "scalar_type (inside macro body)",
-                           FindingAction::Flag);
+        if (SM.isMacroBodyExpansion(exprLoc))
             return noEdits();
-        }
         const bool in_macro_arg = SM.isMacroArgExpansion(exprLoc);
 
         const auto *ME = R.Nodes.getNodeAs<MemberExpr>("dtypeMember");
@@ -740,17 +755,20 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules, Reporter &rep,
             if (methodName != rule.from)
                 continue;
 
-            auto memberLoc = in_macro_arg
-                                 ? SM.getSpellingLoc(ME->getMemberLoc())
-                                 : ME->getMemberLoc();
+            auto memberRange = member("dtypeMember")(R);
+            if (!memberRange)
+                return noEdits();
+            auto memberLoc = memberRange->getBegin();
             rep.addFinding(FindingKind::MethodToFunc, SM, memberLoc, rule.from,
                            rule.to);
             if (!rewrite)
                 return noEdits();
 
-            return singleEdit(memberLoc,
-                              static_cast<unsigned>(rule.from.size()),
-                              std::string(rule.to));
+            Edit E;
+            E.Kind = EditKind::Range;
+            E.Range = *memberRange;
+            E.Replacement = std::string(rule.to);
+            return SmallVector<Edit, 1>{std::move(E)};
         }
         return noEdits();
     };
@@ -927,6 +945,7 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
 static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
                           bool rewrite, const LocFilter &loc) {
     auto projectRoot = loc.projectRoot;
+
     auto editGen = [&rep, rewrite,
                     projectRoot](const MatchFinder::MatchResult &R)
         -> llvm::Expected<SmallVector<Edit, 1>> {
@@ -942,28 +961,66 @@ static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
         const auto &LO = R.Context->getLangOpts();
         const auto *obj = CE->getImplicitObjectArgument();
         auto objText = getSourceText(obj->getSourceRange(), SM, LO);
-        auto fullText = getSourceText(CE->getSourceRange(), SM, LO);
+        auto callText = getSourceText(CE->getSourceRange(), SM, LO);
 
-        std::string replacement =
+        std::string expanded =
             objText + ".numel() * " + objText + ".element_size()";
 
-        if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc, fullText,
-                            replacement))
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc, callText,
+                            expanded))
             return noEdits();
 
-        if (!isSideEffectFree(obj)) {
+        if (isSideEffectFree(obj)) {
             rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
-                           fullText, replacement, FindingAction::Flag);
+                           callText, expanded);
+            if (!rewrite)
+                return noEdits();
+            return singleEdit(CE->getSourceRange(), expanded);
+        }
+
+        const auto *DS = R.Nodes.getNodeAs<DeclStmt>("nbytesStmt");
+        if (!DS) {
+            rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
+                           callText, expanded, FindingAction::Flag);
             return noEdits();
         }
 
-        rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
-                       fullText, replacement);
+        auto indent = getIndent(DS->getBeginLoc(), SM);
+        std::string recvDecl =
+            "auto&& _nbytes_recv = " + objText + ";\n" + indent;
+        std::string recvExpanded =
+            "_nbytes_recv.numel() * _nbytes_recv.element_size()";
+
+        auto stmtText = getSourceText(DS->getSourceRange(), SM, LO);
+        rep.addFinding(FindingKind::MethodToFunc, SM, DS->getBeginLoc(),
+                       stmtText, recvDecl + "_nbytes_recv.numel() * ...");
         if (!rewrite)
             return noEdits();
 
-        return singleEdit(CE->getSourceRange(), replacement);
+        SmallVector<Edit, 2> edits;
+        Edit insert;
+        insert.Kind = EditKind::Range;
+        insert.Range =
+            CharSourceRange::getCharRange(DS->getBeginLoc(), DS->getBeginLoc());
+        insert.Replacement = recvDecl;
+        edits.push_back(std::move(insert));
+
+        Edit replace;
+        replace.Kind = EditKind::Range;
+        replace.Range = CharSourceRange::getTokenRange(CE->getSourceRange());
+        replace.Replacement = recvExpanded;
+        edits.push_back(std::move(replace));
+        return edits;
     };
+
+    rules.push_back(makeRule(
+        declStmt(loc.stmt, containsDeclaration(
+                               0, varDecl(hasInitializer(hasDescendant(
+                                      cxxMemberCallExpr(callee(cxxMethodDecl(
+                                                            hasName("nbytes"))))
+                                          .bind("nbytesCall"))))))
+            .bind("nbytesStmt"),
+        EditGenerator(editGen)));
 
     rules.push_back(makeRule(
         cxxMemberCallExpr(loc.stmt, callee(cxxMethodDecl(hasName("nbytes"))))
@@ -1019,7 +1076,12 @@ static void addNulloptRule(std::vector<RewriteRule> &rules, Reporter &rep,
 // ---------------------------------------------------------------------------
 
 static bool isUnstableNamespace(llvm::StringRef qualName) {
-    if (qualName.starts_with("at::") || qualName.starts_with("c10::"))
+    if (qualName.starts_with("at::")) {
+        if (qualName.starts_with("at::vec::"))
+            return false;
+        return true;
+    }
+    if (qualName.starts_with("c10::"))
         return true;
     if (qualName.starts_with("torch::") &&
         !qualName.starts_with("torch::stable::") &&
@@ -1039,6 +1101,7 @@ static void addUnstableMethodCallCatchAll(std::vector<RewriteRule> &rules,
         handled.insert(r.from);
     for (const auto &m : kStableMethodWhitelist)
         handled.insert(m);
+    handled.insert("nbytes");
 
     auto handledPtr = std::make_shared<llvm::StringSet<>>(std::move(handled));
 
@@ -1310,11 +1373,36 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
     }
 
     if (deviceExpr.empty()) {
-        reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text,
-                             std::string(kAcceleratorGuardClass) + " " +
-                                 varName + "(tensor.get_device_index())",
-                             FindingAction::Flag);
-        return;
+        auto parents = Result.Context->getParents(*VD);
+        while (!parents.empty() && deviceExpr.empty()) {
+            if (const auto *FD = parents[0].get<FunctionDecl>()) {
+                for (const auto *Param : FD->parameters()) {
+                    auto pType = Param->getType()
+                                     .getNonReferenceType()
+                                     .getUnqualifiedType();
+                    const auto *RD = pType->getAsCXXRecordDecl();
+                    if (!RD)
+                        continue;
+                    auto qn = RD->getQualifiedNameAsString();
+                    if (qn == "at::Tensor" || qn == "at::TensorBase" ||
+                        qn == "torch::Tensor" ||
+                        qn == "torch::stable::Tensor") {
+                        deviceExpr =
+                            Param->getNameAsString() + ".get_device_index()";
+                        break;
+                    }
+                }
+                break;
+            }
+            parents = Result.Context->getParents(parents[0]);
+        }
+        if (deviceExpr.empty()) {
+            reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text,
+                                 std::string(kAcceleratorGuardClass) + " " +
+                                     varName + "(tensor.get_device_index())",
+                                 FindingAction::Flag);
+            return;
+        }
     }
 
     last_device_expr_ = deviceExpr;
@@ -1419,11 +1507,16 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
                          FindingAction::Flag);
 }
 
-void registerManualMatchers(MatchFinder &finder,
-                            CudaStreamCallback &streamCallback,
-                            DeviceGuardCallback &guardCallback) {
+// ---------------------------------------------------------------------------
+// .nbytes() → .numel() * .element_size() (manual callback)
+// ---------------------------------------------------------------------------
+
+void registerManualMatchers(
+    MatchFinder &finder, const ast_matchers::internal::Matcher<Stmt> &locFilter,
+    CudaStreamCallback &streamCallback, DeviceGuardCallback &guardCallback) {
     finder.addMatcher(
-        declStmt(containsDeclaration(
+        declStmt(locFilter,
+                 containsDeclaration(
                      0, varDecl(hasType(hasUnqualifiedDesugaredType(recordType(
                                     hasDeclaration(cxxRecordDecl(hasAnyName(
                                         "OptionalCUDAGuard", "CUDAGuard",
@@ -1433,18 +1526,18 @@ void registerManualMatchers(MatchFinder &finder,
         &guardCallback);
 
     finder.addMatcher(
-        declStmt(
-            containsDeclaration(
-                0,
-                varDecl(hasInitializer(hasDescendant(
-                    callExpr(callee(functionDecl(hasAnyName(
-                                 "getCurrentCUDAStream", "getCurrentStream"))))
-                        .bind("streamCall"))))))
+        declStmt(locFilter, containsDeclaration(
+                                0, varDecl(hasInitializer(hasDescendant(
+                                       callExpr(callee(functionDecl(hasAnyName(
+                                                    "getCurrentCUDAStream",
+                                                    "getCurrentStream"))))
+                                           .bind("streamCall"))))))
             .bind("streamDeclStmt"),
         &streamCallback);
 
     finder.addMatcher(
-        callExpr(callee(functionDecl(
+        callExpr(locFilter,
+                 callee(functionDecl(
                      hasAnyName("getCurrentCUDAStream", "getCurrentStream"))),
                  unless(hasAncestor(declStmt())))
             .bind("streamCall"),

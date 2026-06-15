@@ -305,16 +305,16 @@ void Reporter::sortFindings() {
 }
 
 void Reporter::suppressRedundantFlags() {
-    std::set<std::pair<std::string, unsigned>> covered;
+    std::set<std::pair<std::string, unsigned>> coveredLines;
     for (const auto &f : findings_)
         if (f.action == FindingAction::Rewrite)
-            covered.insert({f.file, f.line});
+            coveredLines.insert({f.file, f.line});
 
     size_t removed = 0;
     auto it = std::remove_if(findings_.begin(), findings_.end(),
-                             [&covered, &removed](const Finding &f) {
+                             [&coveredLines, &removed](const Finding &f) {
                                  if (f.action == FindingAction::Flag &&
-                                     covered.count({f.file, f.line})) {
+                                     coveredLines.count({f.file, f.line})) {
                                      ++removed;
                                      return true;
                                  }

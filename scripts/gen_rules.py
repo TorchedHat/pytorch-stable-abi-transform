@@ -447,6 +447,16 @@ def generate_rules_h(
             False,
         ),
         ("c10/util/Optional.h", ["", "", "", "", ""], True),
+        ("c10/core/ScalarType.h", ["torch/headeronly/core/ScalarType.h", "", "", "", ""], False),
+        (
+            "c10/util/Float8_e4m3fn.h",
+            ["torch/headeronly/util/Float8_e4m3fn.h", "", "", "", ""],
+            False,
+        ),
+        ("c10/util/Float8_e5m2.h", ["torch/headeronly/util/Float8_e5m2.h", "", "", "", ""], False),
+        ("c10/util/Half.h", ["torch/headeronly/util/Half.h", "", "", "", ""], False),
+        ("c10/util/BFloat16.h", ["torch/headeronly/util/BFloat16.h", "", "", "", ""], False),
+        ("ATen/cuda/Atomic.cuh", ["", "", "", "", ""], True),
     ]
     for old, new_paths, remove in include_rules:
         new_str = ", ".join(f'"{p}"' for p in (new_paths + [""] * 5)[:5])
@@ -596,7 +606,11 @@ def generate_rules_h(
     lines.append("")
 
     # --- Method rename rules ---
-    method_rename_rules = [("dtype", "scalar_type"), ("itemsize", "element_size")]
+    method_rename_rules = [
+        ("dtype", "scalar_type"),
+        ("itemsize", "element_size"),
+        ("ndimension", "dim"),
+    ]
 
     lines.append("struct MethodRenameRule {")
     lines.append("    std::string_view from;")

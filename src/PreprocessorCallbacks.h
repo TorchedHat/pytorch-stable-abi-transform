@@ -37,6 +37,9 @@ class PreprocessorCallbacks : public clang::PPCallbacks {
                       clang::SourceRange Range,
                       const clang::MacroArgs *Args) override;
 
+    void MacroDefined(const clang::Token &MacroNameTok,
+                      const clang::MacroDirective *MD) override;
+
     void finalizeIncludes();
 
   private:

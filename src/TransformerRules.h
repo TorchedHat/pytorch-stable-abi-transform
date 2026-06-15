@@ -52,8 +52,9 @@ class CudaStreamCallback
     std::string project_root_;
 };
 
-void registerManualMatchers(clang::ast_matchers::MatchFinder &finder,
-                            CudaStreamCallback &streamCallback,
-                            DeviceGuardCallback &guardCallback);
+void registerManualMatchers(
+    clang::ast_matchers::MatchFinder &finder,
+    const clang::ast_matchers::internal::Matcher<clang::Stmt> &locFilter,
+    CudaStreamCallback &streamCallback, DeviceGuardCallback &guardCallback);
 
 } // namespace stable_abi

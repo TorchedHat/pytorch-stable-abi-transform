@@ -360,18 +360,55 @@ runWithConfig(stable_abi::Config &cfg,
                                               : stable_abi::WriteMode::Rewrite)
                          : stable_abi::WriteMode::Audit;
 
-    std::unique_ptr<clang::tooling::FixedCompilationDatabase> ownedDB;
+    std::unique_ptr<clang::tooling::CompilationDatabase> ownedDB;
     clang::tooling::CompilationDatabase *db = externalDB;
     if (!db) {
-        std::vector<std::string> clangArgs;
-        for (const auto &flag : cfg.compiler_flags)
-            clangArgs.push_back(flag);
-        for (const auto &inc : cfg.include_paths)
-            clangArgs.push_back("-I" + inc);
-        ownedDB = std::make_unique<clang::tooling::FixedCompilationDatabase>(
-            ".", clangArgs);
+        if (!cfg.compile_commands_dir.empty()) {
+            std::string dbError;
+            ownedDB = clang::tooling::CompilationDatabase::loadFromDirectory(
+                cfg.compile_commands_dir, dbError);
+            if (!ownedDB) {
+                llvm::errs()
+                    << "error: failed to load compile_commands.json "
+                       "from "
+                    << cfg.compile_commands_dir << ": " << dbError << "\n";
+                return 1;
+            }
+            llvm::errs() << "note: loaded " << ownedDB->getAllFiles().size()
+                         << " entries from " << cfg.compile_commands_dir
+                         << "/compile_commands.json\n";
+        } else if (!projectRoot.empty()) {
+            std::string dbError;
+            ownedDB =
+                clang::tooling::CompilationDatabase::autoDetectFromDirectory(
+                    projectRoot, dbError);
+        }
+        if (!ownedDB) {
+            std::vector<std::string> clangArgs;
+            for (const auto &flag : cfg.compiler_flags)
+                clangArgs.push_back(flag);
+            for (const auto &inc : cfg.include_paths)
+                clangArgs.push_back("-I" + inc);
+            ownedDB =
+                std::make_unique<clang::tooling::FixedCompilationDatabase>(
+                    ".", clangArgs);
+        }
         db = ownedDB.get();
     }
+
+    if (!cfg.compile_commands_dir.empty()) {
+        auto dbFiles = db->getAllFiles();
+        std::set<std::string> known(dbFiles.begin(), dbFiles.end());
+        std::erase_if(sources, [&](const std::string &src) {
+            llvm::SmallString<256> real;
+            if (llvm::sys::fs::real_path(src, real))
+                return true;
+            return !known.count(std::string(real));
+        });
+        llvm::errs() << "note: processing " << sources.size()
+                     << " files with database entries\n";
+    }
+
     std::string outputDir = cfg.output_dir;
     if (!outputDir.empty()) {
         if (projectRoot.empty()) {
@@ -402,14 +439,11 @@ runWithConfig(stable_abi::Config &cfg,
     auto stripAdjuster = stable_abi::makeStripNonClangAdjuster();
     auto toolAdjuster =
         stable_abi::makeToolAdjuster(resourceDir, cudaPath, hasArchFlag);
-    auto pytorchAdjuster =
-        [pytorchIncs](const clang::tooling::CommandLineArguments &Args,
-                      llvm::StringRef /*Filename*/) {
-            auto result = Args;
-            for (const auto &inc : pytorchIncs)
-                result.push_back("-I" + inc);
-            return result;
-        };
+    clang::tooling::CommandLineArguments pytorchFlags;
+    for (const auto &inc : pytorchIncs)
+        pytorchFlags.push_back("-I" + inc);
+    auto pytorchAdjuster = clang::tooling::getInsertArgumentAdjuster(
+        pytorchFlags, clang::tooling::ArgumentInsertPosition::BEGIN);
 
     stable_abi::IncludeGraph includeGraph;
     std::mutex includeGraphMutex;

@@ -82,6 +82,22 @@ inline constexpr std::array kIncludeRules = {
         {"torch/csrc/stable/accelerator.h", "cuda_runtime.h", "", "", ""},
         false},
     IncludeRule{"c10/util/Optional.h", {"", "", "", "", ""}, true},
+    IncludeRule{"c10/core/ScalarType.h",
+                {"torch/headeronly/core/ScalarType.h", "", "", "", ""},
+                false},
+    IncludeRule{"c10/util/Float8_e4m3fn.h",
+                {"torch/headeronly/util/Float8_e4m3fn.h", "", "", "", ""},
+                false},
+    IncludeRule{"c10/util/Float8_e5m2.h",
+                {"torch/headeronly/util/Float8_e5m2.h", "", "", "", ""},
+                false},
+    IncludeRule{"c10/util/Half.h",
+                {"torch/headeronly/util/Half.h", "", "", "", ""},
+                false},
+    IncludeRule{"c10/util/BFloat16.h",
+                {"torch/headeronly/util/BFloat16.h", "", "", "", ""},
+                false},
+    IncludeRule{"ATen/cuda/Atomic.cuh", {"", "", "", "", ""}, true},
 };
 
 struct TypeRule {
@@ -339,6 +355,7 @@ struct MethodRenameRule {
 inline constexpr std::array kMethodRenameRules = {
     MethodRenameRule{"dtype", "scalar_type"},
     MethodRenameRule{"itemsize", "element_size"},
+    MethodRenameRule{"ndimension", "dim"},
 };
 
 // Named constants for dedicated AST handlers.
