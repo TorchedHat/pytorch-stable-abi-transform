@@ -923,9 +923,95 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
         EditGenerator(editGen)));
 }
 
-// nbytes handled by NbytesCallback (manual callback, not Transformer)
-// because impure receivers require a 1→N statement rewrite (introducing
-// a local variable), which exceeds the Transformer's node-scoped edit model.
+// ---------------------------------------------------------------------------
+// .nbytes() → .numel() * .element_size()
+// ---------------------------------------------------------------------------
+
+static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
+                          bool rewrite, const LocFilter &loc) {
+    auto projectRoot = loc.projectRoot;
+
+    auto editGen = [&rep, rewrite,
+                    projectRoot](const MatchFinder::MatchResult &R)
+        -> llvm::Expected<SmallVector<Edit, 1>> {
+        const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("nbytesCall");
+        if (!CE || !isTensorType(CE->getImplicitObjectArgument()))
+            return noEdits();
+
+        auto cl = classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
+        if (cl.kind == LocClass::Skip)
+            return noEdits();
+
+        const auto &SM = *R.SourceManager;
+        const auto &LO = R.Context->getLangOpts();
+        const auto *obj = CE->getImplicitObjectArgument();
+        auto objText = getSourceText(obj->getSourceRange(), SM, LO);
+        auto callText = getSourceText(CE->getSourceRange(), SM, LO);
+
+        std::string expanded =
+            objText + ".numel() * " + objText + ".element_size()";
+
+        if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc, callText,
+                            expanded))
+            return noEdits();
+
+        if (isSideEffectFree(obj)) {
+            rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
+                           callText, expanded);
+            if (!rewrite)
+                return noEdits();
+            return singleEdit(CE->getSourceRange(), expanded);
+        }
+
+        const auto *DS = R.Nodes.getNodeAs<DeclStmt>("nbytesStmt");
+        if (!DS) {
+            rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
+                           callText, expanded, FindingAction::Flag);
+            return noEdits();
+        }
+
+        auto indent = getIndent(DS->getBeginLoc(), SM);
+        std::string recvDecl =
+            "auto&& _nbytes_recv = " + objText + ";\n" + indent;
+        std::string recvExpanded =
+            "_nbytes_recv.numel() * _nbytes_recv.element_size()";
+
+        auto stmtText = getSourceText(DS->getSourceRange(), SM, LO);
+        rep.addFinding(FindingKind::MethodToFunc, SM, DS->getBeginLoc(),
+                       stmtText, recvDecl + "_nbytes_recv.numel() * ...");
+        if (!rewrite)
+            return noEdits();
+
+        SmallVector<Edit, 2> edits;
+        Edit insert;
+        insert.Kind = EditKind::Range;
+        insert.Range =
+            CharSourceRange::getCharRange(DS->getBeginLoc(), DS->getBeginLoc());
+        insert.Replacement = recvDecl;
+        edits.push_back(std::move(insert));
+
+        Edit replace;
+        replace.Kind = EditKind::Range;
+        replace.Range = CharSourceRange::getTokenRange(CE->getSourceRange());
+        replace.Replacement = recvExpanded;
+        edits.push_back(std::move(replace));
+        return edits;
+    };
+
+    rules.push_back(makeRule(
+        declStmt(loc.stmt, containsDeclaration(
+                               0, varDecl(hasInitializer(hasDescendant(
+                                      cxxMemberCallExpr(callee(cxxMethodDecl(
+                                                            hasName("nbytes"))))
+                                          .bind("nbytesCall"))))))
+            .bind("nbytesStmt"),
+        EditGenerator(editGen)));
+
+    rules.push_back(makeRule(
+        cxxMemberCallExpr(loc.stmt, callee(cxxMethodDecl(hasName("nbytes"))))
+            .bind("nbytesCall"),
+        EditGenerator(editGen)));
+}
 
 // ---------------------------------------------------------------------------
 // c10::nullopt → std::nullopt
@@ -1170,7 +1256,7 @@ RewriteRule buildTransformerRules(Reporter &rep, bool rewrite_mode,
     addMethodRenameRules(rules, rep, rewrite_mode, loc);
     addElementSizeRules(rules, rep, rewrite_mode, loc);
     addFreeFuncRules(rules, rep, rewrite_mode, loc);
-
+    addNbytesRule(rules, rep, rewrite_mode, loc);
     addNulloptRule(rules, rep, rewrite_mode, loc);
     addUnstableMethodCallCatchAll(rules, rep, loc);
     addUnstableTypeCatchAll(rules, rep, loc);
@@ -1410,101 +1496,9 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
 // .nbytes() → .numel() * .element_size() (manual callback)
 // ---------------------------------------------------------------------------
 
-void NbytesCallback::run(const MatchFinder::MatchResult &Result) {
-    const auto *CE = Result.Nodes.getNodeAs<CXXMemberCallExpr>("nbytesCall");
-    if (!CE)
-        return;
-    if (!CE || !isTensorType(CE->getImplicitObjectArgument()))
-        return;
-
-    const auto &SM = *Result.SourceManager;
-    const auto &LO = Result.Context->getLangOpts();
-    auto loc = CE->getBeginLoc();
-
-    if (!isInProjectScope(SM, SM.getSpellingLoc(loc), project_root_))
-        return;
-    if (SM.isMacroBodyExpansion(loc)) {
-        auto text = getSourceText(CE->getSourceRange(), SM, LO);
-        reporter_.addFinding(
-            FindingKind::MethodToFunc, SM, SM.getSpellingLoc(loc), text,
-            "nbytes() (inside macro body)", FindingAction::Flag);
-        return;
-    }
-
-    const auto *obj = CE->getImplicitObjectArgument();
-    auto objText = getSourceText(obj->getSourceRange(), SM, LO);
-    auto callText = getSourceText(CE->getSourceRange(), SM, LO);
-
-    if (isSideEffectFree(obj)) {
-        std::string replacement =
-            objText + ".numel() * " + objText + ".element_size()";
-        reporter_.addFinding(FindingKind::MethodToFunc, SM, loc, callText,
-                             replacement);
-        if (rewrite_mode_)
-            addReplacement(file_repls_, SM,
-                           CharSourceRange::getTokenRange(CE->getSourceRange()),
-                           replacement, LO);
-        return;
-    }
-
-    // Impure receiver: extract to local variable to evaluate exactly once.
-    const DeclStmt *DS = nullptr;
-    {
-        auto parents = Result.Context->getParents(*CE);
-        while (!parents.empty()) {
-            if (const auto *S = parents[0].get<DeclStmt>()) {
-                DS = S;
-                break;
-            }
-            if (parents[0].get<CompoundStmt>())
-                break;
-            parents = Result.Context->getParents(parents[0]);
-        }
-    }
-    if (!DS) {
-        std::string replacement =
-            objText + ".numel() * " + objText + ".element_size()";
-        reporter_.addFinding(FindingKind::MethodToFunc, SM, loc, callText,
-                             replacement, FindingAction::Flag);
-        return;
-    }
-
-    auto indent = getIndent(DS->getBeginLoc(), SM);
-    auto stmtText = getSourceText(DS->getSourceRange(), SM, LO);
-    auto callPos = stmtText.find(callText);
-    if (callPos == std::string::npos)
-        return;
-
-    std::string rewritten = stmtText;
-    rewritten.replace(callPos, callText.size(),
-                      "_nbytes_recv.numel() * _nbytes_recv.element_size()");
-    std::string fullRepl =
-        "auto&& _nbytes_recv = " + objText + ";\n" + indent + rewritten;
-
-    reporter_.addFinding(FindingKind::MethodToFunc, SM, DS->getBeginLoc(),
-                         stmtText, fullRepl);
-    if (rewrite_mode_) {
-        auto stmtEnd = Lexer::findLocationAfterToken(DS->getEndLoc(), tok::semi,
-                                                     SM, LO, false);
-        if (stmtEnd.isValid()) {
-            addReplacement(
-                file_repls_, SM,
-                CharSourceRange::getCharRange(DS->getBeginLoc(), stmtEnd),
-                fullRepl, LO);
-        } else {
-            addReplacement(file_repls_, SM,
-                           CharSourceRange::getTokenRange(DS->getSourceRange()),
-                           fullRepl, LO);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-
 void registerManualMatchers(
     MatchFinder &finder, const ast_matchers::internal::Matcher<Stmt> &locFilter,
-    CudaStreamCallback &streamCallback, DeviceGuardCallback &guardCallback,
-    NbytesCallback &nbytesCallback) {
+    CudaStreamCallback &streamCallback, DeviceGuardCallback &guardCallback) {
     finder.addMatcher(
         declStmt(locFilter,
                  containsDeclaration(
@@ -1533,11 +1527,6 @@ void registerManualMatchers(
                  unless(hasAncestor(declStmt())))
             .bind("streamCall"),
         &streamCallback);
-
-    finder.addMatcher(
-        cxxMemberCallExpr(locFilter, callee(cxxMethodDecl(hasName("nbytes"))))
-            .bind("nbytesCall"),
-        &nbytesCallback);
 }
 
 } // namespace stable_abi
