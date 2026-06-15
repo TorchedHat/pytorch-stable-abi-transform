@@ -10,7 +10,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install LLVM 19
         run: |
@@ -30,7 +30,7 @@ jobs:
 
       - name: Cache libtorch headers
         id: cache-libtorch
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: libtorch/include
           key: libtorch-headers-2.11.0-cpu
@@ -60,7 +60,7 @@ jobs:
   test-pip:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install LLVM 19
         run: |
@@ -79,7 +79,7 @@ jobs:
           non-cuda-sub-packages: '["libcublas-dev", "libcusparse-dev", "libcusolver-dev"]'
 
       - name: Cache pip packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           key: pip-torch-cpu-${{ runner.os }}
@@ -101,7 +101,7 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: clang-format
         run: |
