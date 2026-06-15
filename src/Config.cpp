@@ -102,7 +102,20 @@ bool loadConfig(const std::string &path, Config &out, std::string &error) {
     return true;
 }
 
+static bool hasStableHeaders(const std::string &path) {
+    return llvm::sys::fs::is_directory(path + "/torch/csrc/stable");
+}
+
 static std::string detectPytorchRoot() {
+    if (const char *env = std::getenv("PYTORCH_ROOT")) {
+        std::string root(env);
+        if (hasStableHeaders(root))
+            return root;
+        std::string inc = root + "/torch/include";
+        if (hasStableHeaders(inc))
+            return inc;
+    }
+
     FILE *pipe =
         popen("python3 -c \"import torch, os; "
               "print(os.path.join(torch.__path__[0], 'include'))\" 2>/dev/null",
@@ -136,15 +149,17 @@ std::vector<std::string> pytorchIncludePaths(const std::string &root) {
 }
 
 bool resolvePytorchRoot(Config &cfg, std::string &error) {
-    if (cfg.pytorch_root == "auto") {
-        cfg.pytorch_root = detectPytorchRoot();
-        if (cfg.pytorch_root.empty()) {
+    if (cfg.pytorch_root.empty() || cfg.pytorch_root == "auto") {
+        auto detected = detectPytorchRoot();
+        if (!detected.empty()) {
+            cfg.pytorch_root = detected;
+            llvm::errs() << "note: auto-detected pytorch_root: "
+                         << cfg.pytorch_root << "\n";
+        } else if (cfg.pytorch_root == "auto") {
             error = "pytorch_root=auto but python3 -c 'import torch' failed. "
                     "Install torch or set pytorch_root explicitly.";
             return false;
         }
-        llvm::errs() << "note: auto-detected pytorch_root: " << cfg.pytorch_root
-                     << "\n";
     }
     if (!cfg.pytorch_root.empty()) {
         std::string stableDir = cfg.pytorch_root + "/torch/csrc/stable";
@@ -203,9 +218,6 @@ compiler_flags:
 # transform:
 #   - csrc/attention/           # walk entire directory
 #   - csrc/cache.cu             # single file
-
-# Verification method: compile (default, requires pytorch_root) or regex
-verify_method: compile
 
 # CUDA include path (auto-detected if omitted)
 # cuda_include: /usr/local/cuda/include

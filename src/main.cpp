@@ -19,7 +19,6 @@
 
 using stable_abi::Mode;
 using stable_abi::OutputFormat;
-using stable_abi::VerifyMethod;
 
 static void printVersion(llvm::raw_ostream &OS) {
     OS << "stable-abi-transform " << TOOL_VERSION << "\n";
@@ -52,11 +51,6 @@ static llvm::cl::opt<std::string> CudaInclude(
     "cuda-include",
     llvm::cl::desc("Path to CUDA include directory (default: auto-detect)"),
     llvm::cl::init(""), llvm::cl::cat(ToolCategory));
-
-static llvm::cl::opt<std::string> VerifyMethodOpt(
-    "verify-method",
-    llvm::cl::desc("Verification method: compile (default) or regex"),
-    llvm::cl::init("compile"), llvm::cl::cat(ToolCategory));
 
 static llvm::cl::opt<std::string>
     ProjectRoot("project-root",
@@ -135,19 +129,12 @@ static std::optional<OutputFormat> parseFormat(llvm::StringRef s) {
     return std::nullopt;
 }
 
-static std::optional<VerifyMethod> parseVerifyMethod(llvm::StringRef s) {
-    if (s == "compile")
-        return VerifyMethod::Compile;
-    if (s == "regex")
-        return VerifyMethod::Regex;
-    return std::nullopt;
-}
-
-static stable_abi::VerifyOptions
-buildVerifyOptions(const std::string &resourceDir,
-                   const std::string &pytorchRoot,
-                   const std::vector<std::string> &extraIncludes,
-                   const std::string &cudaInclude) {
+static int runVerify(const std::vector<std::string> &sources,
+                     const std::string &resourceDir,
+                     const std::string &pytorchRoot,
+                     const std::vector<std::string> &extraIncludes,
+                     const std::string &cudaInclude, OutputFormat format) {
+    bool json = (format == OutputFormat::Json);
     stable_abi::VerifyOptions opts;
     opts.pytorch_root = pytorchRoot;
     opts.resource_dir = resourceDir;
@@ -155,40 +142,20 @@ buildVerifyOptions(const std::string &resourceDir,
     opts.cuda_include = cudaInclude;
     if (opts.cuda_include.empty())
         opts.cuda_include = detectCudaInclude();
-    return opts;
-}
 
-static int runVerify(const std::vector<std::string> &sources,
-                     const std::string &resourceDir,
-                     const std::string &pytorchRoot,
-                     const std::vector<std::string> &extraIncludes,
-                     const std::string &cudaInclude, VerifyMethod method,
-                     OutputFormat format, bool allow_fallback = false) {
-    bool use_compile = (method == VerifyMethod::Compile);
-    bool json = (format == OutputFormat::Json);
-    auto opts = buildVerifyOptions(resourceDir, pytorchRoot, extraIncludes,
-                                   cudaInclude);
-
-    if (use_compile && opts.pytorch_root.empty()) {
-        if (allow_fallback) {
-            use_compile = false;
-            llvm::errs() << "note: --pytorch-root not set, using regex-based "
-                            "verification (less precise).\n"
-                         << "      Pass --pytorch-root for compile-based "
-                            "verification.\n";
-        } else {
-            llvm::errs() << "error: --pytorch-root required for compile-based "
-                            "verification\n"
-                         << "       use --verify-method=regex for regex-based "
-                            "fallback\n";
-            return 1;
-        }
+    if (opts.pytorch_root.empty()) {
+        llvm::errs()
+            << "error: --pytorch-root required for compile-based verification\n"
+            << "  hint: use --pytorch-root=auto to detect from pip-installed "
+               "torch\n"
+            << "  hint: for a quick check without PyTorch, use --mode=audit "
+               "instead\n";
+        return 1;
     }
 
     size_t total_violations = 0;
     for (const auto &src : sources) {
-        auto violations = use_compile ? stable_abi::verifyStableAbi(src, opts)
-                                      : stable_abi::verifyStableAbiRegex(src);
+        auto violations = stable_abi::verifyStableAbi(src, opts);
         if (json)
             stable_abi::printViolationsJson(violations);
         else
@@ -272,16 +239,6 @@ static bool applyCliOverrides(stable_abi::Config &cfg) {
         cfg.pytorch_root = PytorchRoot.getValue();
     if (ProjectRoot.getNumOccurrences() > 0)
         cfg.project_root = ProjectRoot.getValue();
-    if (VerifyMethodOpt.getNumOccurrences() > 0) {
-        auto v = parseVerifyMethod(VerifyMethodOpt.getValue());
-        if (!v) {
-            llvm::errs() << "error: invalid verify-method '"
-                         << VerifyMethodOpt.getValue()
-                         << "'. Must be one of: compile, regex\n";
-            return false;
-        }
-        cfg.verify_method = *v;
-    }
     if (CudaInclude.getNumOccurrences() > 0)
         cfg.cuda_include = CudaInclude.getValue();
     if (ExtraIncludes.getNumOccurrences() > 0)
@@ -346,8 +303,7 @@ runWithConfig(stable_abi::Config &cfg,
 
     if (cfg.mode == Mode::Verify) {
         return runVerify(sources, resourceDir, cfg.pytorch_root,
-                         cfg.extra_includes, cfg.cuda_include,
-                         cfg.verify_method, cfg.format);
+                         cfg.extra_includes, cfg.cuda_include, cfg.format);
     }
 
     if (cfg.mode == Mode::Plan && projectRoot.empty()) {
@@ -558,9 +514,11 @@ runWithConfig(stable_abi::Config &cfg,
                     verifySources.push_back(std::string(out));
             }
         }
-        int verify_result = runVerify(
-            verifySources, resourceDir, cfg.pytorch_root, cfg.extra_includes,
-            cfg.cuda_include, cfg.verify_method, cfg.format, true);
+        int verify_result = 0;
+        if (!cfg.pytorch_root.empty())
+            verify_result =
+                runVerify(verifySources, resourceDir, cfg.pytorch_root,
+                          cfg.extra_includes, cfg.cuda_include, cfg.format);
         if (verify_result > 0) {
             if (!json)
                 llvm::outs() << "\nUnstable API references remain. "
