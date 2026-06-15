@@ -395,6 +395,23 @@ runWithConfig(stable_abi::Config &cfg,
         }
         db = ownedDB.get();
     }
+
+    if (!cfg.compile_commands_dir.empty()) {
+        auto dbFiles = db->getAllFiles();
+        std::set<std::string> dbFileSet(dbFiles.begin(), dbFiles.end());
+        size_t before = sources.size();
+        std::erase_if(sources, [&](const std::string &src) {
+            llvm::SmallString<256> realPath;
+            if (llvm::sys::fs::real_path(src, realPath))
+                return true;
+            return !dbFileSet.count(std::string(realPath));
+        });
+        if (sources.size() < before)
+            llvm::errs() << "note: " << (before - sources.size())
+                         << " files skipped (not in compile_commands.json, "
+                            "analyzed when included by compiled sources)\n";
+    }
+
     std::string outputDir = cfg.output_dir;
     if (!outputDir.empty()) {
         if (projectRoot.empty()) {

@@ -475,28 +475,31 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
                                    "data_ptr", "mutable_data_ptr");
                     if (!rewrite)
                         return noEdits();
-                    auto memberLoc = SM.isMacroArgExpansion(ME->getMemberLoc())
-                                         ? SM.getSpellingLoc(ME->getMemberLoc())
-                                         : ME->getMemberLoc();
-                    return singleEdit(memberLoc, 8, "mutable_data_ptr");
+                    auto range = member("dataPtrMember")(R);
+                    if (!range)
+                        return noEdits();
+                    Edit E;
+                    E.Kind = EditKind::Range;
+                    E.Range = *range;
+                    E.Replacement = "mutable_data_ptr";
+                    return SmallVector<Edit, 1>{std::move(E)};
                 }
             }
         }
-
-        auto loc = CE->getBeginLoc();
-        const bool in_macro = SM.isMacroArgExpansion(loc);
-        auto memberLoc = in_macro ? SM.getSpellingLoc(ME->getMemberLoc())
-                                  : ME->getMemberLoc();
 
         rep.addFinding(FindingKind::DataPtr, SM, cl.spelling, "data_ptr",
                        replacement);
         if (!rewrite)
             return noEdits();
 
-        return singleEdit(
-            memberLoc,
-            static_cast<unsigned>(std::string_view("data_ptr").size()),
-            replacement);
+        auto range = member("dataPtrMember")(R);
+        if (!range)
+            return noEdits();
+        Edit E;
+        E.Kind = EditKind::Range;
+        E.Range = *range;
+        E.Replacement = replacement;
+        return SmallVector<Edit, 1>{std::move(E)};
     };
 
     rules.push_back(makeRule(
@@ -743,17 +746,20 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules, Reporter &rep,
             if (methodName != rule.from)
                 continue;
 
-            auto memberLoc = in_macro_arg
-                                 ? SM.getSpellingLoc(ME->getMemberLoc())
-                                 : ME->getMemberLoc();
+            auto memberRange = member("dtypeMember")(R);
+            if (!memberRange)
+                return noEdits();
+            auto memberLoc = memberRange->getBegin();
             rep.addFinding(FindingKind::MethodToFunc, SM, memberLoc, rule.from,
                            rule.to);
             if (!rewrite)
                 return noEdits();
 
-            return singleEdit(memberLoc,
-                              static_cast<unsigned>(rule.from.size()),
-                              std::string(rule.to));
+            Edit E;
+            E.Kind = EditKind::Range;
+            E.Range = *memberRange;
+            E.Replacement = std::string(rule.to);
+            return SmallVector<Edit, 1>{std::move(E)};
         }
         return noEdits();
     };
