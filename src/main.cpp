@@ -398,18 +398,15 @@ runWithConfig(stable_abi::Config &cfg,
 
     if (!cfg.compile_commands_dir.empty()) {
         auto dbFiles = db->getAllFiles();
-        std::set<std::string> dbFileSet(dbFiles.begin(), dbFiles.end());
-        size_t before = sources.size();
+        std::set<std::string> known(dbFiles.begin(), dbFiles.end());
         std::erase_if(sources, [&](const std::string &src) {
-            llvm::SmallString<256> realPath;
-            if (llvm::sys::fs::real_path(src, realPath))
+            llvm::SmallString<256> real;
+            if (llvm::sys::fs::real_path(src, real))
                 return true;
-            return !dbFileSet.count(std::string(realPath));
+            return !known.count(std::string(real));
         });
-        if (sources.size() < before)
-            llvm::errs() << "note: " << (before - sources.size())
-                         << " files skipped (not in compile_commands.json, "
-                            "analyzed when included by compiled sources)\n";
+        llvm::errs() << "note: processing " << sources.size()
+                     << " files with database entries\n";
     }
 
     std::string outputDir = cfg.output_dir;

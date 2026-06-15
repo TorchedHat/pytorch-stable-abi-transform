@@ -134,51 +134,39 @@ inline std::string jsonEscape(std::string_view s) {
     return out;
 }
 
-// Strip gcc/nvcc-specific flags that ClangTool's built-in adjusters don't
-// handle. ClangTool already strips -o, -MF/-MT/-MQ, and adds -fsyntax-only.
-// This adjuster handles: compiler paths, nvcc flags, -x, -gencode, -fPIC,
-// and gnu++ → c++ conversion.
+// Strip gcc/nvcc-specific flags. ClangTool's built-in adjusters already
+// handle -o, -MF/-MT/-MQ (output/deps), -c → -fsyntax-only, and compiler
+// path replacement. This adjuster only strips flags unknown to Clang.
 inline clang::tooling::ArgumentsAdjuster makeStripNonClangAdjuster() {
     return [](const clang::tooling::CommandLineArguments &Args,
               llvm::StringRef /*Filename*/) {
         clang::tooling::CommandLineArguments result;
         bool skipNext = false;
-        for (size_t i = 0; i < Args.size(); ++i) {
+        for (const auto &arg : Args) {
             if (skipNext) {
                 skipNext = false;
                 continue;
             }
-            llvm::StringRef a(Args[i]);
-            if (i == 0 &&
-                (a.contains('/') || a.ends_with("g++") || a.ends_with("gcc") ||
-                 a.ends_with("nvcc") || a.ends_with("clang++")))
-                continue;
-            if (a == "-c")
-                continue;
+            llvm::StringRef a(arg);
             if (a.starts_with("-Xcudafe") || a.starts_with("--expt-") ||
                 a.starts_with("-forward-unknown") ||
                 a.starts_with("-Xcompiler") ||
                 a.starts_with("--diag_suppress") ||
-                a.starts_with("-static-global-template-stub"))
+                a.starts_with("-static-global-template-stub") || a == "-fPIC" ||
+                a == "-fPIE" || a == "-shared")
                 continue;
-            if (a == "-gencode" || a == "--generate-code") {
+            if (a == "-gencode" || a == "--generate-code" || a == "-x") {
                 skipNext = true;
                 continue;
             }
             if (a.starts_with("arch=") || a.starts_with("code="))
-                continue;
-            if (a == "-x") {
-                skipNext = true;
-                continue;
-            }
-            if (a == "-fPIC" || a == "-fPIE" || a == "-shared")
                 continue;
             if (a.starts_with("-std=gnu++")) {
                 result.push_back("-std=c++" +
                                  std::string(a.substr(strlen("-std=gnu++"))));
                 continue;
             }
-            result.push_back(Args[i]);
+            result.push_back(arg);
         }
         return result;
     };
