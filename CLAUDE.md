@@ -88,7 +88,7 @@ $TOOL --mode=plan --project-root=./csrc -- [same flags]
 
 ### YAML config
 
-Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `cuda_include`, `extra_includes`, `transform`, `include_paths`, `output_dir`, `compile_commands_dir`, `jobs`. `transform` lists files or directories to process (directories are recursively walked for .cpp/.cu/.cuh files); if omitted, all files under `project_root` are auto-discovered. PyTorch include paths are auto-derived from `pytorch_root` — set it to `auto` to detect from pip-installed torch.
+Config fields mirror CLI flags: `mode`, `format`, `pytorch_root`, `project_root`, `cuda_include`, `extra_includes`, `transform`, `include_paths`, `output_dir`, `compile_commands_dir`, `jobs`. `transform` lists files or directories to process (directories are recursively walked for .cpp/.cu/.cuh files); if omitted, all files under `project_root` are auto-discovered. `pytorch_root` is auto-detected from `PYTORCH_ROOT` env or pip-installed torch when not set explicitly.
 
 ### .cuh files
 

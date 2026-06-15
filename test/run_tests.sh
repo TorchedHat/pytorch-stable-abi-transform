@@ -612,7 +612,7 @@ echo ""
 echo "Completeness tests: $comp_passed passed, $comp_failed failed"
 [ "$comp_failed" -gt 0 ] && exit 1
 
-# Compile-based verification: stricter check, may expose issues regex misses
+# Compile-based verification: rewritten outputs must compile against stable headers only
 echo ""
 echo "--- Compile-based verification tests ---"
 compile_passed=0
