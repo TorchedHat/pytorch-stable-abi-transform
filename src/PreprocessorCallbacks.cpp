@@ -288,4 +288,63 @@ void PreprocessorCallbacks::MacroExpands(const clang::Token &MacroNameTok,
     }
 }
 
+void PreprocessorCallbacks::MacroDefined(const clang::Token &MacroNameTok,
+                                         const clang::MacroDirective *MD) {
+    if (!MD)
+        return;
+    auto *MI = MD->getMacroInfo();
+    if (!MI || MI->getNumTokens() == 0)
+        return;
+
+    auto defLoc = MI->getDefinitionLoc();
+    if (!isInProjectScope(SM_, defLoc, project_root_))
+        return;
+
+    auto bodyRange = clang::CharSourceRange::getTokenRange(
+        MI->getReplacementToken(0).getLocation(), MI->getDefinitionEndLoc());
+    auto bodyText = clang::Lexer::getSourceText(bodyRange, SM_, lang_opts_);
+    if (bodyText.empty())
+        return;
+
+    auto scanAndReplace = [&](std::string_view from, std::string_view to,
+                              FindingKind kind) {
+        llvm::StringRef text(bodyText);
+        size_t searchStart = 0;
+        while (searchStart < text.size()) {
+            auto pos = text.find(from, searchStart);
+            if (pos == llvm::StringRef::npos)
+                break;
+            auto endPos = pos + from.size();
+            bool wordEnd =
+                endPos >= text.size() ||
+                (!std::isalnum(static_cast<unsigned char>(text[endPos])) &&
+                 text[endPos] != '_');
+            bool wordStart =
+                pos == 0 ||
+                (!std::isalnum(static_cast<unsigned char>(text[pos - 1])) &&
+                 text[pos - 1] != '_');
+            if (wordStart && wordEnd) {
+                auto loc = bodyRange.getBegin().getLocWithOffset(
+                    static_cast<int>(pos));
+                reporter_.addFinding(kind, SM_, loc, from, to);
+                if (rewrite_mode_)
+                    addReplacement(file_repls_, SM_, loc,
+                                   static_cast<unsigned>(from.size()), to);
+            }
+            searchStart = endPos;
+        }
+    };
+
+    for (const auto &rule : kTypeRules) {
+        if (!rule.from.empty() && !rule.to.empty())
+            scanAndReplace(rule.from, rule.to, FindingKind::Type);
+    }
+    for (const auto &rule : kMacroRules) {
+        if (!rule.flag_only)
+            scanAndReplace(rule.from, rule.to, FindingKind::Macro);
+    }
+    for (const auto &rule : kNamespaceRules)
+        scanAndReplace(rule.from, rule.to, FindingKind::Type);
+}
+
 } // namespace stable_abi

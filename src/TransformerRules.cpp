@@ -141,12 +141,28 @@ static ClassifiedLoc classifyLoc(SourceLocation loc, const SourceManager &SM,
     return {LocClass::Rewritable, spelling};
 }
 
+static bool isRewritableAtDefinition(std::string_view pattern) {
+    for (const auto &r : kTypeRules)
+        if (r.from == pattern && !r.to.empty())
+            return true;
+    for (const auto &r : kMacroRules)
+        if (r.from == pattern && !r.flag_only)
+            return true;
+    for (const auto &r : kNamespaceRules)
+        if (r.from == pattern)
+            return true;
+    return false;
+}
+
 static bool flagIfMacroBody(ClassifiedLoc cl, const SourceManager &SM,
                             Reporter &rep, FindingKind kind,
                             std::string_view old_text,
                             std::string_view new_text) {
     if (cl.kind != LocClass::MacroBody)
         return false;
+    if (isRewritableAtDefinition(old_text) || kind == FindingKind::ScalarType ||
+        kind == FindingKind::DataPtr)
+        return true;
     std::string flagText = std::string(new_text) + " (inside macro body)";
     rep.addFinding(kind, SM, cl.spelling, old_text, flagText,
                    FindingAction::Flag);
@@ -324,11 +340,8 @@ rewriteEnumRef(const MatchFinder::MatchResult &R, Reporter &rep, bool rewrite,
         return noEdits();
     if (!dedup.insert(SM.getFileOffset(spellingLoc)).second)
         return noEdits();
-    if (SM.isMacroBodyExpansion(loc)) {
-        rep.addFinding(FindingKind::ScalarType, SM, spellingLoc, macroBodyDesc,
-                       "(inside macro body)", FindingAction::Flag);
+    if (SM.isMacroBodyExpansion(loc))
         return noEdits();
-    }
 
     const bool in_macro_arg = SM.isMacroArgExpansion(loc);
     SourceRange textRange =
@@ -729,12 +742,8 @@ static void addMethodRenameRules(std::vector<RewriteRule> &rules, Reporter &rep,
         auto spellingLoc = SM.getSpellingLoc(exprLoc);
         if (!isInProjectScope(SM, spellingLoc, projectRoot))
             return noEdits();
-        if (SM.isMacroBodyExpansion(exprLoc)) {
-            rep.addFinding(FindingKind::MethodToFunc, SM, spellingLoc, "dtype",
-                           "scalar_type (inside macro body)",
-                           FindingAction::Flag);
+        if (SM.isMacroBodyExpansion(exprLoc))
             return noEdits();
-        }
         const bool in_macro_arg = SM.isMacroArgExpansion(exprLoc);
 
         const auto *ME = R.Nodes.getNodeAs<MemberExpr>("dtypeMember");

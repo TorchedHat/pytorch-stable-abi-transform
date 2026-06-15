@@ -368,24 +368,25 @@ macro_out=$("$TOOL" --mode=audit --format=json "$MACRO_INPUT" "${COMMON_ARGS[@]}
 macro_result=$(echo "$macro_out" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-mb = [f for f in d['findings'] if f['flag'] and 'macro body' in f['new']]
-kinds = {f['kind'] for f in mb}
-required = {'TYPE', 'DPTR', 'M2F'}
-missing = required - kinds
-if missing:
-    print(f'FAIL missing kinds: {missing}')
-elif len(mb) < 3:
-    print(f'FAIL only {len(mb)} flags, expected >= 3')
+# TYPE and DPTR in macro definitions are now auto-rewritten.
+# Only M2F (method calls) in macro bodies are flagged.
+rewrites = [f for f in d['findings'] if not f['flag']]
+flags = [f for f in d['findings'] if f['flag']]
+rw_kinds = {f['kind'] for f in rewrites}
+fl_kinds = {f['kind'] for f in flags}
+# TYPE should be rewritten (macro definition), M2F should be flagged
+ok = 'TYPE' in rw_kinds and 'M2F' in fl_kinds
+if ok:
+    print(f'PASS {len(rewrites)} rewrites, {len(flags)} flags')
 else:
-    print(f'PASS {len(mb)}')
+    print(f'FAIL rw_kinds={rw_kinds} fl_kinds={fl_kinds}')
 ")
 if echo "$macro_result" | grep -q "^PASS"; then
-    count=$(echo "$macro_result" | grep -oP '\d+')
-    echo "PASS  macro-body-detection: $count flags across TYPE, DPTR, M2F"
+    echo "PASS  macro-body-detection: $macro_result"
     macro_passed=$((macro_passed + 1))
 else
     echo "FAIL  macro-body-detection: $macro_result"
-    echo "$macro_out"
+    echo "$macro_out" | python3 -m json.tool 2>/dev/null | head -30
     macro_failed=$((macro_failed + 1))
 fi
 
