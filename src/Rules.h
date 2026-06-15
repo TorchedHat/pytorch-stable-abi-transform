@@ -339,6 +339,7 @@ struct MethodRenameRule {
 inline constexpr std::array kMethodRenameRules = {
     MethodRenameRule{"dtype", "scalar_type"},
     MethodRenameRule{"itemsize", "element_size"},
+    MethodRenameRule{"ndimension", "dim"},
 };
 
 // Named constants for dedicated AST handlers.

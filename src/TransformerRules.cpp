@@ -472,10 +472,13 @@ static void addDataPtrRule(std::vector<RewriteRule> &rules, Reporter &rep,
                 const auto argType = tArgs[0].getArgument().getAsType();
                 if (argType->isDependentType()) {
                     rep.addFinding(FindingKind::DataPtr, SM, cl.spelling,
-                                   "data_ptr<dependent>",
-                                   "mutable_data_ptr<T> (dependent type)",
-                                   FindingAction::Flag);
-                    return noEdits();
+                                   "data_ptr", "mutable_data_ptr");
+                    if (!rewrite)
+                        return noEdits();
+                    auto memberLoc = SM.isMacroArgExpansion(ME->getMemberLoc())
+                                         ? SM.getSpellingLoc(ME->getMemberLoc())
+                                         : ME->getMemberLoc();
+                    return singleEdit(memberLoc, 8, "mutable_data_ptr");
                 }
             }
         }
@@ -972,7 +975,12 @@ static void addNulloptRule(std::vector<RewriteRule> &rules, Reporter &rep,
 // ---------------------------------------------------------------------------
 
 static bool isUnstableNamespace(llvm::StringRef qualName) {
-    if (qualName.starts_with("at::") || qualName.starts_with("c10::"))
+    if (qualName.starts_with("at::")) {
+        if (qualName.starts_with("at::vec::"))
+            return false;
+        return true;
+    }
+    if (qualName.starts_with("c10::"))
         return true;
     if (qualName.starts_with("torch::") &&
         !qualName.starts_with("torch::stable::") &&
@@ -1471,7 +1479,7 @@ void NbytesCallback::run(const MatchFinder::MatchResult &Result) {
     rewritten.replace(callPos, callText.size(),
                       "_nbytes_recv.numel() * _nbytes_recv.element_size()");
     std::string fullRepl =
-        "auto& _nbytes_recv = " + objText + ";\n" + indent + rewritten;
+        "auto&& _nbytes_recv = " + objText + ";\n" + indent + rewritten;
 
     reporter_.addFinding(FindingKind::MethodToFunc, SM, DS->getBeginLoc(),
                          stmtText, fullRepl);

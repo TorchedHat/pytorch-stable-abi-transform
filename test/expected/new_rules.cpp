@@ -37,7 +37,7 @@ void use_nbytes(const torch::stable::Tensor& t) {
 struct Logger { torch::stable::Tensor tensor; };
 Logger getLogger();
 void use_nbytes_impure() {
-    auto& _nbytes_recv = getLogger().tensor;
+    auto&& _nbytes_recv = getLogger().tensor;
     auto total_bytes = _nbytes_recv.numel() * _nbytes_recv.element_size();
 }
 

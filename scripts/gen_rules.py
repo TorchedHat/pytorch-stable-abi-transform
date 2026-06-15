@@ -596,7 +596,11 @@ def generate_rules_h(
     lines.append("")
 
     # --- Method rename rules ---
-    method_rename_rules = [("dtype", "scalar_type"), ("itemsize", "element_size")]
+    method_rename_rules = [
+        ("dtype", "scalar_type"),
+        ("itemsize", "element_size"),
+        ("ndimension", "dim"),
+    ]
 
     lines.append("struct MethodRenameRule {")
     lines.append("    std::string_view from;")
