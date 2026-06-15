@@ -25,10 +25,6 @@ struct VerifyOptions {
 [[nodiscard]] std::vector<Violation>
 verifyStableAbi(const std::string &filepath, const VerifyOptions &opts);
 
-// Regex-based verification (legacy fallback): scan for forbidden patterns.
-[[nodiscard]] std::vector<Violation>
-verifyStableAbiRegex(const std::string &filepath);
-
 void printViolations(const std::vector<Violation> &violations);
 void printViolationsJson(const std::vector<Violation> &violations);
 

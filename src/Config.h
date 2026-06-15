@@ -8,7 +8,6 @@ namespace stable_abi {
 
 enum class Mode { Audit, Rewrite, Verify, Plan };
 enum class OutputFormat { Text, Json };
-enum class VerifyMethod { Compile, Regex };
 
 struct Config {
     Mode mode = Mode::Audit;
@@ -19,7 +18,6 @@ struct Config {
     std::vector<std::string> include_paths;
     std::vector<std::string> extra_includes;
     std::vector<std::string> transform;
-    VerifyMethod verify_method = VerifyMethod::Compile;
     std::string cuda_include;
     std::string output_dir;
     std::string compile_commands_dir;
@@ -54,13 +52,6 @@ template <> struct ScalarEnumerationTraits<stable_abi::OutputFormat> {
     }
 };
 
-template <> struct ScalarEnumerationTraits<stable_abi::VerifyMethod> {
-    static void enumeration(IO &io, stable_abi::VerifyMethod &val) {
-        io.enumCase(val, "compile", stable_abi::VerifyMethod::Compile);
-        io.enumCase(val, "regex", stable_abi::VerifyMethod::Regex);
-    }
-};
-
 template <> struct MappingTraits<stable_abi::Config> {
     static void mapping(IO &io, stable_abi::Config &c) {
         io.mapOptional("mode", c.mode);
@@ -71,7 +62,6 @@ template <> struct MappingTraits<stable_abi::Config> {
         io.mapOptional("include_paths", c.include_paths);
         io.mapOptional("extra_includes", c.extra_includes);
         io.mapOptional("transform", c.transform);
-        io.mapOptional("verify_method", c.verify_method);
         io.mapOptional("cuda_include", c.cuda_include);
         io.mapOptional("output_dir", c.output_dir);
         io.mapOptional("compile_commands_dir", c.compile_commands_dir);

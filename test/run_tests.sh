@@ -94,31 +94,6 @@ if [ "$failed" -gt 0 ]; then
     exit 1
 fi
 
-# Verification tests: run verify mode on expected outputs (should all PASS)
-echo ""
-echo "--- Verification tests ---"
-verify_passed=0
-verify_failed=0
-
-for expected_file in "$EXPECTED"/*.cpp "$EXPECTED"/*.cu; do
-    [ -f "$expected_file" ] || continue
-    basename="$(basename "$expected_file")"
-
-    output=$("$TOOL" --mode=verify --verify-method=regex "$expected_file" "${COMMON_ARGS[@]}" 2>&1)
-    if echo "$output" | grep -q "PASS"; then
-        echo "VERIFY PASS  $basename (regex)"
-        verify_passed=$((verify_passed + 1))
-    else
-        echo "VERIFY FAIL  $basename (regex)"
-        echo "$output"
-        verify_failed=$((verify_failed + 1))
-    fi
-done
-
-echo ""
-echo "Verification (regex): $verify_passed passed, $verify_failed failed"
-[ "$verify_failed" -gt 0 ] && exit 1
-
 # Exit code tests
 echo ""
 echo "--- Exit code tests ---"
