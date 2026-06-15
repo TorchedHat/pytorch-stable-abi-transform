@@ -472,7 +472,7 @@ else
     comp_failed=$((comp_failed + 1))
 fi
 
-# Impure nbytes: getLogger().tensor.nbytes() must be flagged, not auto-rewritten
+# Impure nbytes: getLogger().tensor.nbytes() must be auto-rewritten (receiver extraction)
 NBYTES_INPUT="$WORK_DIR/nbytes_impure.cpp"
 cat > "$NBYTES_INPUT" << 'NBYTESEOF'
 #include <ATen/ATen.h>
@@ -485,17 +485,17 @@ void f() {
 NBYTESEOF
 
 nbytes_out=$("$TOOL" --mode=audit --format=json "$NBYTES_INPUT" "${COMMON_ARGS[@]}" 2>/dev/null || true)
-nbytes_flags=$(echo "$nbytes_out" | python3 -c "
+nbytes_rewrites=$(echo "$nbytes_out" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-flags = [f for f in d['findings'] if f['flag'] and 'nbytes' in f.get('old','').lower()]
-print(len(flags))
+rewrites = [f for f in d['findings'] if not f['flag'] and 'numel' in f.get('new','')]
+print(len(rewrites))
 ")
-if [ "$nbytes_flags" -ge 1 ]; then
-    echo "PASS  nbytes-impure: impure receiver correctly flagged"
+if [ "$nbytes_rewrites" -ge 1 ]; then
+    echo "PASS  nbytes-impure: impure receiver auto-rewritten with extraction"
     comp_passed=$((comp_passed + 1))
 else
-    echo "FAIL  nbytes-impure: expected flag for impure nbytes, got $nbytes_flags"
+    echo "FAIL  nbytes-impure: expected auto-rewrite, got $nbytes_rewrites"
     echo "$nbytes_out" | python3 -m json.tool 2>/dev/null | head -20
     comp_failed=$((comp_failed + 1))
 fi

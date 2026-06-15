@@ -33,6 +33,14 @@ void use_nbytes(const torch::stable::Tensor& t) {
     auto total_bytes = t.numel() * t.element_size();
 }
 
+// Pattern 5b: .nbytes() with impure receiver — extracts to local variable.
+struct Logger { torch::stable::Tensor tensor; };
+Logger getLogger();
+void use_nbytes_impure() {
+    auto& _nbytes_recv = getLogger().tensor;
+    auto total_bytes = _nbytes_recv.numel() * _nbytes_recv.element_size();
+}
+
 // Pattern 6: AT_DISPATCH_FLOATING_TYPES → THO_DISPATCH_V2
 void dispatch_floating(const torch::stable::Tensor& input) {
     THO_DISPATCH_V2(input.scalar_type(), "floating_kernel", [&] {

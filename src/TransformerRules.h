@@ -52,8 +52,27 @@ class CudaStreamCallback
     std::string project_root_;
 };
 
-void registerManualMatchers(clang::ast_matchers::MatchFinder &finder,
-                            CudaStreamCallback &streamCallback,
-                            DeviceGuardCallback &guardCallback);
+class NbytesCallback : public clang::ast_matchers::MatchFinder::MatchCallback {
+  public:
+    NbytesCallback(FileReplacements &fileRepls, Reporter &rep, bool rewrite,
+                   const std::string &projectRoot = "")
+        : file_repls_(fileRepls), reporter_(rep), rewrite_mode_(rewrite),
+          project_root_(projectRoot) {}
+
+    void
+    run(const clang::ast_matchers::MatchFinder::MatchResult &Result) override;
+
+  private:
+    FileReplacements &file_repls_;
+    Reporter &reporter_;
+    bool rewrite_mode_;
+    std::string project_root_;
+};
+
+void registerManualMatchers(
+    clang::ast_matchers::MatchFinder &finder,
+    const clang::ast_matchers::internal::Matcher<clang::Stmt> &locFilter,
+    CudaStreamCallback &streamCallback, DeviceGuardCallback &guardCallback,
+    NbytesCallback &nbytesCallback);
 
 } // namespace stable_abi

@@ -28,9 +28,20 @@ StableAbiConsumer::StableAbiConsumer(FileReplacements &fileRepls, Reporter &rep,
       guardCallback_(fileRepls, rep, opts_.generates_edits(),
                      opts_.project_root),
       streamCallback_(fileRepls, rep, opts_.generates_edits(), guardCallback_,
+                      opts_.project_root),
+      nbytesCallback_(fileRepls, rep, opts_.generates_edits(),
                       opts_.project_root) {
     transformer_.registerMatchers(&finder_);
-    registerManualMatchers(finder_, streamCallback_, guardCallback_);
+
+    using StmtMatcher = clang::ast_matchers::internal::Matcher<clang::Stmt>;
+    StmtMatcher locFilter = [&]() -> StmtMatcher {
+        if (opts_.project_root.empty())
+            return clang::ast_matchers::isExpansionInMainFile();
+        return clang::ast_matchers::isExpansionInFileMatching(
+            "^" + llvm::Regex::escape(opts_.project_root));
+    }();
+    registerManualMatchers(finder_, locFilter, streamCallback_, guardCallback_,
+                           nbytesCallback_);
 }
 
 void StableAbiConsumer::HandleTranslationUnit(clang::ASTContext &Context) {

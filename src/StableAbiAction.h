@@ -43,6 +43,7 @@ class StableAbiConsumer : public clang::ASTConsumer {
     clang::tooling::Transformer transformer_;
     DeviceGuardCallback guardCallback_;
     CudaStreamCallback streamCallback_;
+    NbytesCallback nbytesCallback_;
 };
 
 class StableAbiFrontendAction : public clang::ASTFrontendAction {

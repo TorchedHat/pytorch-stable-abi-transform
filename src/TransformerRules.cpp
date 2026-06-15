@@ -920,56 +920,9 @@ static void addFreeFuncRules(std::vector<RewriteRule> &rules, Reporter &rep,
         EditGenerator(editGen)));
 }
 
-// ---------------------------------------------------------------------------
-// .nbytes() → .numel() * .element_size()
-// ---------------------------------------------------------------------------
-
-static void addNbytesRule(std::vector<RewriteRule> &rules, Reporter &rep,
-                          bool rewrite, const LocFilter &loc) {
-    auto projectRoot = loc.projectRoot;
-    auto editGen = [&rep, rewrite,
-                    projectRoot](const MatchFinder::MatchResult &R)
-        -> llvm::Expected<SmallVector<Edit, 1>> {
-        const auto *CE = R.Nodes.getNodeAs<CXXMemberCallExpr>("nbytesCall");
-        if (!CE || !isTensorType(CE->getImplicitObjectArgument()))
-            return noEdits();
-
-        auto cl = classifyLoc(CE->getBeginLoc(), *R.SourceManager, projectRoot);
-        if (cl.kind == LocClass::Skip)
-            return noEdits();
-
-        const auto &SM = *R.SourceManager;
-        const auto &LO = R.Context->getLangOpts();
-        const auto *obj = CE->getImplicitObjectArgument();
-        auto objText = getSourceText(obj->getSourceRange(), SM, LO);
-        auto fullText = getSourceText(CE->getSourceRange(), SM, LO);
-
-        std::string replacement =
-            objText + ".numel() * " + objText + ".element_size()";
-
-        if (flagIfMacroBody(cl, SM, rep, FindingKind::MethodToFunc, fullText,
-                            replacement))
-            return noEdits();
-
-        if (!isSideEffectFree(obj)) {
-            rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
-                           fullText, replacement, FindingAction::Flag);
-            return noEdits();
-        }
-
-        rep.addFinding(FindingKind::MethodToFunc, SM, CE->getBeginLoc(),
-                       fullText, replacement);
-        if (!rewrite)
-            return noEdits();
-
-        return singleEdit(CE->getSourceRange(), replacement);
-    };
-
-    rules.push_back(makeRule(
-        cxxMemberCallExpr(loc.stmt, callee(cxxMethodDecl(hasName("nbytes"))))
-            .bind("nbytesCall"),
-        EditGenerator(editGen)));
-}
+// nbytes handled by NbytesCallback (manual callback, not Transformer)
+// because impure receivers require a 1→N statement rewrite (introducing
+// a local variable), which exceeds the Transformer's node-scoped edit model.
 
 // ---------------------------------------------------------------------------
 // c10::nullopt → std::nullopt
@@ -1039,6 +992,7 @@ static void addUnstableMethodCallCatchAll(std::vector<RewriteRule> &rules,
         handled.insert(r.from);
     for (const auto &m : kStableMethodWhitelist)
         handled.insert(m);
+    handled.insert("nbytes");
 
     auto handledPtr = std::make_shared<llvm::StringSet<>>(std::move(handled));
 
@@ -1208,7 +1162,7 @@ RewriteRule buildTransformerRules(Reporter &rep, bool rewrite_mode,
     addMethodRenameRules(rules, rep, rewrite_mode, loc);
     addElementSizeRules(rules, rep, rewrite_mode, loc);
     addFreeFuncRules(rules, rep, rewrite_mode, loc);
-    addNbytesRule(rules, rep, rewrite_mode, loc);
+
     addNulloptRule(rules, rep, rewrite_mode, loc);
     addUnstableMethodCallCatchAll(rules, rep, loc);
     addUnstableTypeCatchAll(rules, rep, loc);
@@ -1310,11 +1264,36 @@ void DeviceGuardCallback::run(const MatchFinder::MatchResult &Result) {
     }
 
     if (deviceExpr.empty()) {
-        reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text,
-                             std::string(kAcceleratorGuardClass) + " " +
-                                 varName + "(tensor.get_device_index())",
-                             FindingAction::Flag);
-        return;
+        auto parents = Result.Context->getParents(*VD);
+        while (!parents.empty() && deviceExpr.empty()) {
+            if (const auto *FD = parents[0].get<FunctionDecl>()) {
+                for (const auto *Param : FD->parameters()) {
+                    auto pType = Param->getType()
+                                     .getNonReferenceType()
+                                     .getUnqualifiedType();
+                    const auto *RD = pType->getAsCXXRecordDecl();
+                    if (!RD)
+                        continue;
+                    auto qn = RD->getQualifiedNameAsString();
+                    if (qn == "at::Tensor" || qn == "at::TensorBase" ||
+                        qn == "torch::Tensor" ||
+                        qn == "torch::stable::Tensor") {
+                        deviceExpr =
+                            Param->getNameAsString() + ".get_device_index()";
+                        break;
+                    }
+                }
+                break;
+            }
+            parents = Result.Context->getParents(parents[0]);
+        }
+        if (deviceExpr.empty()) {
+            reporter_.addFinding(FindingKind::DeviceGuard, SM, loc, text,
+                                 std::string(kAcceleratorGuardClass) + " " +
+                                     varName + "(tensor.get_device_index())",
+                                 FindingAction::Flag);
+            return;
+        }
     }
 
     last_device_expr_ = deviceExpr;
@@ -1419,11 +1398,108 @@ void CudaStreamCallback::run(const MatchFinder::MatchResult &Result) {
                          FindingAction::Flag);
 }
 
-void registerManualMatchers(MatchFinder &finder,
-                            CudaStreamCallback &streamCallback,
-                            DeviceGuardCallback &guardCallback) {
+// ---------------------------------------------------------------------------
+// .nbytes() → .numel() * .element_size() (manual callback)
+// ---------------------------------------------------------------------------
+
+void NbytesCallback::run(const MatchFinder::MatchResult &Result) {
+    const auto *CE = Result.Nodes.getNodeAs<CXXMemberCallExpr>("nbytesCall");
+    if (!CE)
+        return;
+    if (!CE || !isTensorType(CE->getImplicitObjectArgument()))
+        return;
+
+    const auto &SM = *Result.SourceManager;
+    const auto &LO = Result.Context->getLangOpts();
+    auto loc = CE->getBeginLoc();
+
+    if (!isInProjectScope(SM, SM.getSpellingLoc(loc), project_root_))
+        return;
+    if (SM.isMacroBodyExpansion(loc)) {
+        auto text = getSourceText(CE->getSourceRange(), SM, LO);
+        reporter_.addFinding(
+            FindingKind::MethodToFunc, SM, SM.getSpellingLoc(loc), text,
+            "nbytes() (inside macro body)", FindingAction::Flag);
+        return;
+    }
+
+    const auto *obj = CE->getImplicitObjectArgument();
+    auto objText = getSourceText(obj->getSourceRange(), SM, LO);
+    auto callText = getSourceText(CE->getSourceRange(), SM, LO);
+
+    if (isSideEffectFree(obj)) {
+        std::string replacement =
+            objText + ".numel() * " + objText + ".element_size()";
+        reporter_.addFinding(FindingKind::MethodToFunc, SM, loc, callText,
+                             replacement);
+        if (rewrite_mode_)
+            addReplacement(file_repls_, SM,
+                           CharSourceRange::getTokenRange(CE->getSourceRange()),
+                           replacement, LO);
+        return;
+    }
+
+    // Impure receiver: extract to local variable to evaluate exactly once.
+    const DeclStmt *DS = nullptr;
+    {
+        auto parents = Result.Context->getParents(*CE);
+        while (!parents.empty()) {
+            if (const auto *S = parents[0].get<DeclStmt>()) {
+                DS = S;
+                break;
+            }
+            if (parents[0].get<CompoundStmt>())
+                break;
+            parents = Result.Context->getParents(parents[0]);
+        }
+    }
+    if (!DS) {
+        std::string replacement =
+            objText + ".numel() * " + objText + ".element_size()";
+        reporter_.addFinding(FindingKind::MethodToFunc, SM, loc, callText,
+                             replacement, FindingAction::Flag);
+        return;
+    }
+
+    auto indent = getIndent(DS->getBeginLoc(), SM);
+    auto stmtText = getSourceText(DS->getSourceRange(), SM, LO);
+    auto callPos = stmtText.find(callText);
+    if (callPos == std::string::npos)
+        return;
+
+    std::string rewritten = stmtText;
+    rewritten.replace(callPos, callText.size(),
+                      "_nbytes_recv.numel() * _nbytes_recv.element_size()");
+    std::string fullRepl =
+        "auto& _nbytes_recv = " + objText + ";\n" + indent + rewritten;
+
+    reporter_.addFinding(FindingKind::MethodToFunc, SM, DS->getBeginLoc(),
+                         stmtText, fullRepl);
+    if (rewrite_mode_) {
+        auto stmtEnd = Lexer::findLocationAfterToken(DS->getEndLoc(), tok::semi,
+                                                     SM, LO, false);
+        if (stmtEnd.isValid()) {
+            addReplacement(
+                file_repls_, SM,
+                CharSourceRange::getCharRange(DS->getBeginLoc(), stmtEnd),
+                fullRepl, LO);
+        } else {
+            addReplacement(file_repls_, SM,
+                           CharSourceRange::getTokenRange(DS->getSourceRange()),
+                           fullRepl, LO);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+void registerManualMatchers(
+    MatchFinder &finder, const ast_matchers::internal::Matcher<Stmt> &locFilter,
+    CudaStreamCallback &streamCallback, DeviceGuardCallback &guardCallback,
+    NbytesCallback &nbytesCallback) {
     finder.addMatcher(
-        declStmt(containsDeclaration(
+        declStmt(locFilter,
+                 containsDeclaration(
                      0, varDecl(hasType(hasUnqualifiedDesugaredType(recordType(
                                     hasDeclaration(cxxRecordDecl(hasAnyName(
                                         "OptionalCUDAGuard", "CUDAGuard",
@@ -1433,22 +1509,27 @@ void registerManualMatchers(MatchFinder &finder,
         &guardCallback);
 
     finder.addMatcher(
-        declStmt(
-            containsDeclaration(
-                0,
-                varDecl(hasInitializer(hasDescendant(
-                    callExpr(callee(functionDecl(hasAnyName(
-                                 "getCurrentCUDAStream", "getCurrentStream"))))
-                        .bind("streamCall"))))))
+        declStmt(locFilter, containsDeclaration(
+                                0, varDecl(hasInitializer(hasDescendant(
+                                       callExpr(callee(functionDecl(hasAnyName(
+                                                    "getCurrentCUDAStream",
+                                                    "getCurrentStream"))))
+                                           .bind("streamCall"))))))
             .bind("streamDeclStmt"),
         &streamCallback);
 
     finder.addMatcher(
-        callExpr(callee(functionDecl(
+        callExpr(locFilter,
+                 callee(functionDecl(
                      hasAnyName("getCurrentCUDAStream", "getCurrentStream"))),
                  unless(hasAncestor(declStmt())))
             .bind("streamCall"),
         &streamCallback);
+
+    finder.addMatcher(
+        cxxMemberCallExpr(locFilter, callee(cxxMethodDecl(hasName("nbytes"))))
+            .bind("nbytesCall"),
+        &nbytesCallback);
 }
 
 } // namespace stable_abi
