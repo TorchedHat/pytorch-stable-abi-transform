@@ -195,6 +195,7 @@ makeToolAdjuster(const std::string &resourceDir, const std::string &cudaPath,
             extra.push_back("-nocudalib");
             extra.push_back("-nogpulib");
             extra.push_back("-Wno-unknown-cuda-version");
+            extra.push_back("-Wno-c++11-narrowing");
             extra.push_back("-DUSE_CUDA");
             if (!cudaPath.empty())
                 extra.push_back("--cuda-path=" + cudaPath);
