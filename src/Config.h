@@ -22,6 +22,7 @@ struct Config {
     VerifyMethod verify_method = VerifyMethod::Compile;
     std::string cuda_include;
     std::string output_dir;
+    std::string compile_commands_dir;
     unsigned jobs = 0;
 };
 
@@ -73,6 +74,7 @@ template <> struct MappingTraits<stable_abi::Config> {
         io.mapOptional("verify_method", c.verify_method);
         io.mapOptional("cuda_include", c.cuda_include);
         io.mapOptional("output_dir", c.output_dir);
+        io.mapOptional("compile_commands_dir", c.compile_commands_dir);
         io.mapOptional("jobs", c.jobs);
     }
 };

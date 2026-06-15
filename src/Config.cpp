@@ -210,6 +210,12 @@ verify_method: compile
 # CUDA include path (auto-detected if omitted)
 # cuda_include: /usr/local/cuda/include
 
+# Path to directory containing compile_commands.json (optional).
+# When set, per-file compiler flags are read from the database instead of
+# compiler_flags/include_paths. Auto-detected from project_root if omitted.
+# Generate with: cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build
+# compile_commands_dir: build
+
 # Output directory for out-of-place rewrite (optional)
 # When set, transformed files are written here instead of in-place.
 # Only modified files are written, preserving relative paths from project_root.
